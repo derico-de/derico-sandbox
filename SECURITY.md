@@ -1,0 +1,160 @@
+# sandboxsh security model
+
+## Goal
+
+Allow a coding agent to execute arbitrary commands, use passwordless guest sudo,
+and control Docker inside a development environment without granting routine
+access to the host control plane, unrelated host files, the LAN, or arbitrary
+exfiltration endpoints.
+
+## Assumptions
+
+Treat the agent, repository instructions, dependencies, build scripts, fetched
+content, and Docker images as malicious. Assume they obtain root inside the VM.
+Guest root is expected: membership in the guest `docker` group is already
+root-equivalent inside that VM.
+
+The host user launching `sandboxsh` is trusted. The `.sandboxsh.json` file is not:
+it is part of the agent-writable checkout.
+
+## Enforced boundaries
+
+### Hardware VM boundary
+
+Every project runs in an Incus VM with its own kernel. Docker uses that guest
+kernel. No host Docker socket, Incus socket, SSH agent, host home, or host device
+is mounted.
+
+UEFI Secure Boot remains enabled. Low-level QEMU configuration and passthrough
+devices are blocked by the restricted Incus user project.
+
+### Restricted Incus control plane
+
+`sandboxsh` expects the package-provided `incus-user` service:
+
+- host user belongs to `incus`;
+- host user does not belong to `incus-admin`;
+- client is confined to the automatically-created `user-<uid>` project;
+- the project has `restricted=true`;
+- host-path disk sources are constrained by Incus to the user's home directory;
+- storage, network, low-level VM, and device restrictions remain enforced.
+
+`sandboxsh doctor` and every mutating lifecycle command check this. Every Incus
+subprocess uses an isolated `INCUS_CONF`, forces the local socket, and selects the
+`user-<uid>` project rather than inheriting a configured remote/current project.
+Running with `incus-admin` is rejected unless
+the trusted host explicitly sets
+`SANDBOXSH_ALLOW_ADMIN=1`. Incus documents access to the administrator Unix
+socket as full daemon control, including attaching host filesystems and devices.
+
+The Incus client and its configuration are never installed or mounted into the
+guest as a host-control mechanism. The `incus-agent` inside a VM is a guest
+management channel, not access to the host daemon socket.
+
+### Host filesystem
+
+The selected workspace model is a live VM share:
+
+- the project root is mounted read-write;
+- the agent can modify or delete every file in that checkout;
+- no claim is made that the checkout itself is protected;
+- Git commits, host snapshots, and backups provide recovery.
+
+Additional mount authority is approved outside the checkout. Exact source,
+target, and read-only/read-write mode are recorded under
+`~/.config/sandboxsh/approvals.json` with mode `0600`. An agent changing the
+project config cannot silently mount a newly requested path or upgrade a mount
+to read-write.
+
+Mounts overlapping common credential/control locations are blocked even before
+approval. The trusted host can override this only with
+`SANDBOXSH_ALLOW_SENSITIVE_MOUNTS=1`.
+
+### Network
+
+The guest cannot be trusted to enforce its own firewall because guest root and
+Docker can change it. `sandboxsh` therefore attaches an Incus network ACL to the
+VM NIC:
+
+- unmatched ingress and egress are rejected;
+- address and MAC filtering are enabled;
+- allowlisted DNS names are resolved by the host to explicit IPv4/IPv6 addresses;
+- project-added destinations require host-side approval;
+- private destinations require an additional `allow_private=true` declaration;
+- loopback, link-local/metadata, multicast, unspecified, and reserved destinations
+  are rejected even when private access is requested;
+- only declared development TCP ports accept inbound host traffic;
+- ACL defaults and denied traffic logging are requested on the NIC.
+
+The managed Incus bridge supplies baseline DHCP/DNS before ACL rules. The ACL is
+refreshed explicitly after address rotation. Existing persistent guests are
+updated while stopped and only then started, preventing stale startup authority.
+The disposable golden-image builder receives the same host-enforced policy before
+its first boot.
+
+Disabling the firewall requires the trusted host environment variable
+`SANDBOXSH_ALLOW_OPEN_NETWORK=1`. This escape hatch should not be used for YOLO
+sessions.
+
+### Resources
+
+Incus enforces vCPU, RAM, and root-disk size. Docker data lives on the limited VM
+root disk. A guest fork bomb, build cache, or image pull is therefore bounded by
+the configured allocation, although contention with other host workloads is
+still possible.
+
+## Credential scope
+
+The user selected shared agent credentials. Claude, pi, and Vibe configuration
+is stored on the Incus-managed `sandboxsh-agent-creds` filesystem volume.
+Consequences:
+
+- authenticate once and reuse the login in all project VMs;
+- any compromised project VM with the volume attached can read or alter all
+  shared agent state;
+- concurrent agent processes can contend on shared settings/session files.
+
+Do not put SSH keys, cloud credentials, deployment tokens, `.netrc`, or unrelated
+application secrets on this volume. They stay VM-local by default. Prefer
+short-lived, narrowly-scoped credentials for any secret exposed to untrusted
+code.
+
+## Publication controls
+
+A system Git `pre-push` hook denies routine pushes. A deliberate guest command
+can use `SANDBOXSH_ALLOW_PUSH=1`, and guest root can bypass the hook. This is a
+friction guard, not a security boundary. Protect important branches and releases
+server-side.
+
+## Residual risks
+
+This design does not eliminate:
+
+- KVM, QEMU, virtiofs/9p, firmware, or Incus-agent escape vulnerabilities;
+- destruction or malicious modification of the mounted project checkout;
+- exfiltration of shared agent credentials to an allowed endpoint;
+- abuse of a legitimately allowed registry/API or DNS rebinding to an already
+  permitted address;
+- malicious output exported from the guest or committed into the project;
+- CPU, disk-I/O, network, and microarchitectural side channels;
+- supply-chain compromise of the base image, packages, agents, or Docker images;
+- host compromise by a trusted user who directly exercises their allowed Incus
+  project capabilities.
+
+Use a dedicated host and disposable, non-shared credentials when VM escape or
+cross-project credential exposure is unacceptable.
+
+## Security invariants to test
+
+1. `id -nG` on the host contains `incus` and not `incus-admin`.
+2. Incus exposes only the restricted `user-<uid>` project to the launcher.
+3. `/run/incus/unix.socket`, `/var/lib/incus/unix.socket`, and the host Docker
+   socket do not exist in the VM.
+4. `docker info` reports the guest daemon and `docker compose version` succeeds.
+5. A non-allowlisted public endpoint and RFC1918 target fail from the VM.
+6. An allowlisted provider succeeds.
+7. Only declared ports accept host connections.
+8. A project-config change requesting an external host path or endpoint fails
+   until approved from the host.
+9. Sensitive host paths remain rejected.
+10. CPU, memory, and root-volume limits match `.sandboxsh.json`.
