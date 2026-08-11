@@ -65,6 +65,19 @@ def cli(ctx: click.Context, config_path: Path | None) -> None:
             raise click.ClickException(str(exc)) from exc
 
 
+@cli.command("setup")
+@click.pass_obj
+@handled
+def setup_command(context: Context) -> None:
+    """Prepare project-local Incus networking (requires sudo)."""
+    if shutil.which("sudo") is None:
+        raise SandboxshError("sudo is required for one-time Incus network setup")
+    network = context.incus.setup_project_network()
+    click.echo(
+        f"Project {context.incus.project} uses project-local managed network {network}."
+    )
+
+
 @cli.command("update")
 @click.option("--ref", help="Git tag, branch, or commit to install (defaults to main).")
 @click.pass_obj
@@ -221,12 +234,15 @@ def down_command(context: Context) -> None:
 def destroy_command(context: Context, yes: bool) -> None:
     """Delete this VM and its project-local state; shared agent credentials remain."""
     config = context.config()
-    context.incus.verify_host_access()
+    # Legacy incus-user projects must be able to delete their VMs before the
+    # one-time project-local network migration can run.
+    context.incus.verify_host_access(require_project_network=False)
+    cleanup_acl = context.incus.project_has_local_networking()
     if not yes and not click.confirm(
         f"Delete {config.instance_name} and all VM-local credentials/state?", default=False
     ):
         raise SandboxshError("destroy cancelled")
-    context.incus.destroy(config)
+    context.incus.destroy(config, cleanup_acl=cleanup_acl)
     click.echo(f"Deleted {config.instance_name}. Shared agent credentials were kept.")
 
 
@@ -356,6 +372,23 @@ def image_build_command(context: Context, image: str, source: str) -> None:
     click.echo(f"Published {image}.")
 
 
+@image_group.command("delete")
+@click.option("--alias", "image", default="sandboxsh/base", show_default=True)
+@click.option("-y", "--yes", is_flag=True, help="Do not prompt.")
+@click.pass_obj
+@handled
+def image_delete_command(context: Context, image: str, yes: bool) -> None:
+    """Delete a reusable golden image, including during legacy network migration."""
+    context.incus.verify_host_access(require_project_network=False)
+    if not context.incus.image_exists(image):
+        click.echo(f"Image {image!r} is already absent.")
+        return
+    if not yes and not click.confirm(f"Delete reusable image {image!r}?", default=False):
+        raise SandboxshError("image deletion cancelled")
+    context.incus.command("image", "delete", image)
+    click.echo(f"Deleted image {image!r}.")
+
+
 @image_group.command("status")
 @click.option("--alias", "image", default="sandboxsh/base", show_default=True)
 @click.pass_obj
@@ -379,7 +412,7 @@ def credentials_group() -> None:
 @handled
 def credentials_reset_command(context: Context, yes: bool) -> None:
     """Delete all shared Claude/pi/Vibe credentials after VMs are destroyed."""
-    context.incus.verify_host_access()
+    context.incus.verify_host_access(require_project_network=False)
     if not context.incus.volume_exists(CREDS_VOLUME):
         click.echo("Shared agent credential volume is already absent.")
         return

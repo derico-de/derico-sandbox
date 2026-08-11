@@ -36,16 +36,29 @@ devices are blocked by the restricted Incus user project.
 - host user does not belong to `incus-admin`;
 - client is confined to the automatically-created `user-<uid>` project;
 - the project has `restricted=true`;
+- the project has `features.networks=true` and owns its managed bridge and ACLs;
 - host-path disk sources are constrained by Incus to the user's home directory;
 - storage, network, low-level VM, and device restrictions remain enforced.
 
-`sandboxsh doctor` and every mutating lifecycle command check this. Every Incus
-subprocess uses an isolated `INCUS_CONF`, forces the local socket, and selects the
-`user-<uid>` project rather than inheriting a configured remote/current project.
-Running with `incus-admin` is rejected unless
-the trusted host explicitly sets
-`SANDBOXSH_ALLOW_ADMIN=1`. Incus documents access to the administrator Unix
-socket as full daemon control, including attaching host filesystems and devices.
+Incus-user initially creates the project with `features.networks=false`, which
+places its bridge in the administrator-owned default network project. The
+one-time `sandboxsh setup` command uses `sudo` to migrate only an empty project:
+it enables project-local networking and creates a same-named managed bridge. It
+refuses migration when project resources exist beyond the default profile. This
+operation is run by the trusted host
+at installation or explicit upgrade time; routine lifecycle operations never use
+administrator access.
+
+`sandboxsh doctor` and normal lifecycle commands check the resulting boundary.
+The explicitly destructive legacy cleanup commands (`destroy`, `image delete`,
+and `credentials reset`) still verify the restricted project but temporarily
+allow `features.networks=false` so an older project can be emptied for migration.
+Normal Incus subprocesses use an isolated `INCUS_CONF`, force the local socket,
+and select `user-<uid>` rather than inheriting a configured remote/current project. Raw ACL requests include that project in the API URL because Incus
+rejects the global project flag for raw queries. Running with `incus-admin` is
+rejected unless the trusted host explicitly sets `SANDBOXSH_ALLOW_ADMIN=1`.
+Incus documents access to the administrator Unix socket as full daemon control,
+including attaching host filesystems and devices.
 
 The Incus client and its configuration are never installed or mounted into the
 guest as a host-control mechanism. The `incus-agent` inside a VM is a guest

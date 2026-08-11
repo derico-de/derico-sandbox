@@ -49,6 +49,112 @@ class Incus:
             env=self.environment,
         )
 
+    def _admin_command(
+        self,
+        *args: str,
+        check: bool = True,
+    ) -> Result:
+        """Run a narrowly-scoped, explicitly requested host setup operation."""
+        return self.runner.run(
+            ["sudo", "incus", "--force-local", *args],
+            check=check,
+        )
+
+    def setup_project_network(self) -> str:
+        """Move an empty incus-user project onto its own managed network namespace."""
+        feature = self._admin_command(
+            "project", "get", self.project, "features.networks", check=False
+        )
+        if feature.returncode:
+            detail = feature.stderr.strip() or feature.stdout.strip() or "project not found"
+            raise SandboxshError(
+                f"cannot inspect restricted Incus project {self.project}: {detail}. "
+                "Ensure incus-user.socket is running and the user project has been initialized."
+            )
+
+        network_result = self._admin_command(
+            "--project",
+            self.project,
+            "profile",
+            "device",
+            "get",
+            "default",
+            "eth0",
+            "network",
+            check=False,
+        )
+        network = network_result.stdout.strip()
+        if network_result.returncode or not network:
+            raise SandboxshError(
+                f"restricted Incus project {self.project} has no managed default network"
+            )
+
+        feature_value = feature.stdout.strip()
+        changed_feature = False
+        if feature_value != "true":
+            if feature_value not in ("", "false"):
+                raise SandboxshError(
+                    f"unexpected features.networks value for {self.project}: {feature_value!r}"
+                )
+            projects = self._admin_command("project", "list", "--format=json")
+            try:
+                project_records = json.loads(projects.stdout)
+            except json.JSONDecodeError as exc:
+                raise SandboxshError("Incus returned invalid project data during setup") from exc
+            project_record = next(
+                (record for record in project_records if record.get("name") == self.project),
+                None,
+            )
+            if project_record is None:
+                raise SandboxshError(f"Incus project {self.project!r} disappeared during setup")
+            default_profile = f"/1.0/profiles/default?project={self.project}"
+            resources = [
+                value
+                for value in project_record.get("used_by", [])
+                if value != default_profile
+            ]
+            if resources:
+                formatted = "\n  ".join(resources)
+                raise SandboxshError(
+                    f"cannot enable project-local networking while {self.project} contains "
+                    f"resources:\n  {formatted}\nRemove them, run `sandboxsh setup`, then "
+                    "recreate them. Legacy cleanup remains available through "
+                    "`sandboxsh destroy`, `sandboxsh image delete`, and "
+                    "`sandboxsh credentials reset`."
+                )
+            self._admin_command(
+                "project", "set", self.project, "features.networks=true"
+            )
+            changed_feature = True
+
+        existing = self._admin_command(
+            "--project", self.project, "network", "show", network, check=False
+        )
+        if existing.returncode:
+            created = self._admin_command(
+                "--project", self.project, "network", "create", network, check=False
+            )
+            if created.returncode and not self._already_exists(created):
+                rollback = None
+                if changed_feature:
+                    rollback = self._admin_command(
+                        "project",
+                        "set",
+                        self.project,
+                        "features.networks=false",
+                        check=False,
+                    )
+                if rollback is not None and rollback.returncode:
+                    create_detail = created.stderr.strip() or created.stdout.strip()
+                    rollback_detail = rollback.stderr.strip() or rollback.stdout.strip()
+                    raise SandboxshError(
+                        f"cannot create project-local network {network}: {create_detail}; "
+                        f"rollback to features.networks=false also failed: {rollback_detail}"
+                    )
+                raise self._probe_error(f"create project-local network {network}", created)
+
+        return network
+
     def _project_query(
         self,
         action: str,
@@ -67,7 +173,17 @@ class Incus:
         # API request explicitly in its URL.
         return self.runner.run(command, check=check, env=self.environment)
 
-    def verify_host_access(self) -> str:
+    def project_has_local_networking(self) -> bool:
+        value = self.command(
+            "project", "get", self.project, "features.networks"
+        ).stdout.strip()
+        if value not in ("true", "false", ""):
+            raise SandboxshError(
+                f"unexpected features.networks value for {self.project}: {value!r}"
+            )
+        return value == "true"
+
+    def verify_host_access(self, *, require_project_network: bool = True) -> str:
         """Require the restricted incus-user socket, never incus-admin by default."""
         try:
             admin = grp.getgrnam("incus-admin")
@@ -100,6 +216,11 @@ class Incus:
         restricted = self.command("project", "get", expected, "restricted").stdout.strip()
         if restricted != "true":
             raise SandboxshError(f"Incus project {expected!r} is not restricted")
+        if require_project_network and not self.project_has_local_networking():
+            raise SandboxshError(
+                f"Incus project {expected!r} does not have project-local networking; "
+                "run `sandboxsh setup` from the trusted host"
+            )
         return expected
 
     @staticmethod
@@ -406,12 +527,13 @@ class Incus:
             return
         self.command("stop", config.instance_name, "--force")
 
-    def destroy(self, config: ProjectConfig) -> None:
+    def destroy(self, config: ProjectConfig, *, cleanup_acl: bool = True) -> None:
         if self.exists(config.instance_name):
             self.command("delete", config.instance_name, "--force")
             if self.exists(config.instance_name):
                 raise SandboxshError(f"Incus did not delete {config.instance_name}")
-        self.delete_acl(config)
+        if cleanup_acl:
+            self.delete_acl(config)
 
     def guest_ip(self, config: ProjectConfig) -> str | None:
         record = self._instance_record(config.instance_name)

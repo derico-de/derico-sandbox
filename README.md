@@ -55,13 +55,23 @@ Update an existing pipx installation later with:
 
 ```bash
 sandboxsh update
+sandboxsh setup    # idempotent; required once when upgrading older installations
 ```
 
 Use `sandboxsh update --ref <tag-or-commit>` to install a specific revision.
+If `setup` reports resources in an older Incus user project, remove each project
+VM from its checkout with `sandboxsh destroy`, then remove the disposable golden
+image with `sandboxsh image delete`. An existing shared credential volume also
+blocks the Incus feature migration; `sandboxsh credentials reset` removes it but
+loses the shared agent logins, so back up anything important first. Run
+`sandboxsh setup` again and rebuild/recreate afterward.
 
 The installer never adds you to `incus-admin`. A fresh Incus daemon is minimally
-initialized, then `incus-user` creates the restricted `user-<uid>` project and a
-per-user managed bridge when you first use it.
+initialized, then `incus-user` creates the restricted `user-<uid>` project. Incus
+initially places its per-user bridge in the default network project with
+`features.networks=false`; the installer uses a one-time trusted `sudo` operation
+to give an empty user project its own network namespace and managed bridge. All
+routine VM and ACL operations then remain confined to the restricted project.
 
 The default golden image is built from `images:debian/13/cloud`. Override it if
 needed:

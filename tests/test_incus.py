@@ -42,6 +42,180 @@ def test_every_incus_command_forces_local_restricted_project() -> None:
     assert runner.commands[0][1]["env"]["INCUS_CONF"].endswith("/sandboxsh/incus-client")
 
 
+def test_setup_project_network_migrates_empty_incus_user_project() -> None:
+    class SetupRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            operation = list(command)[3:]
+            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
+                return Result("false\n", "", 0)
+            if "profile" in operation and "device" in operation:
+                return Result(f"incusbr-{os.getuid()}\n", "", 0)
+            if "list" in operation and "--format=json" in operation:
+                project = f"user-{os.getuid()}"
+                return Result(
+                    json.dumps(
+                        [
+                            {
+                                "name": project,
+                                "used_by": [f"/1.0/profiles/default?project={project}"],
+                            }
+                        ]
+                    ),
+                    "",
+                    0,
+                )
+            if "network" in operation and "show" in operation:
+                return Result("", "not found", 1)
+            return Result("", "", 0)
+
+    runner = SetupRunner()
+    incus = Incus(runner)
+
+    network = incus.setup_project_network()
+
+    assert network == f"incusbr-{os.getuid()}"
+    commands = [command for command, _ in runner.commands]
+    assert [
+        "sudo",
+        "incus",
+        "--force-local",
+        "project",
+        "set",
+        f"user-{os.getuid()}",
+        "features.networks=true",
+    ] in commands
+    assert [
+        "sudo",
+        "incus",
+        "--force-local",
+        "--project",
+        f"user-{os.getuid()}",
+        "network",
+        "create",
+        f"incusbr-{os.getuid()}",
+    ] in commands
+
+
+def test_setup_project_network_is_idempotent() -> None:
+    class ReadySetupRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            operation = list(command)[3:]
+            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
+                return Result("true\n", "", 0)
+            if "profile" in operation and "device" in operation:
+                return Result(f"incusbr-{os.getuid()}\n", "", 0)
+            if "network" in operation and "show" in operation:
+                return Result("name: ready\n", "", 0)
+            return Result("", "", 0)
+
+    runner = ReadySetupRunner()
+
+    assert Incus(runner).setup_project_network() == f"incusbr-{os.getuid()}"
+    assert not any("set" in command or "create" in command for command, _ in runner.commands)
+
+
+def test_setup_project_network_refuses_nonempty_projects() -> None:
+    class OccupiedSetupRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            operation = list(command)[3:]
+            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
+                return Result("false\n", "", 0)
+            if "profile" in operation and "device" in operation:
+                return Result(f"incusbr-{os.getuid()}\n", "", 0)
+            if "list" in operation and "--format=json" in operation:
+                project = f"user-{os.getuid()}"
+                return Result(
+                    json.dumps(
+                        [
+                            {
+                                "name": project,
+                                "used_by": [
+                                    f"/1.0/profiles/default?project={project}",
+                                    f"/1.0/instances/existing?project={project}",
+                                ],
+                            }
+                        ]
+                    ),
+                    "",
+                    0,
+                )
+            return Result("", "", 0)
+
+    runner = OccupiedSetupRunner()
+    incus = Incus(runner)
+
+    try:
+        incus.setup_project_network()
+    except SandboxshError as exc:
+        assert "contains resources" in str(exc)
+        assert "/instances/existing" in str(exc)
+    else:
+        raise AssertionError("occupied Incus project was migrated")
+
+    assert not any("set" in command for command, _ in runner.commands)
+
+
+def test_setup_project_network_reports_rollback_failure() -> None:
+    class FailedSetupRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            operation = list(command)[3:]
+            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
+                return Result("false\n", "", 0)
+            if "profile" in operation and "device" in operation:
+                return Result(f"incusbr-{os.getuid()}\n", "", 0)
+            if "list" in operation and "--format=json" in operation:
+                project = f"user-{os.getuid()}"
+                return Result(
+                    json.dumps(
+                        [
+                            {
+                                "name": project,
+                                "used_by": [f"/1.0/profiles/default?project={project}"],
+                            }
+                        ]
+                    ),
+                    "",
+                    0,
+                )
+            if "network" in operation and "show" in operation:
+                return Result("", "not found", 1)
+            if "network" in operation and "create" in operation:
+                return Result("", "network creation failed", 1)
+            if operation[-1:] == ["features.networks=false"]:
+                return Result("", "rollback failed", 1)
+            return Result("", "", 0)
+
+    try:
+        Incus(FailedSetupRunner()).setup_project_network()
+    except SandboxshError as exc:
+        assert "network creation failed" in str(exc)
+        assert "rollback failed" in str(exc)
+    else:
+        raise AssertionError("setup failure was suppressed")
+
+
+def test_verify_host_access_requires_project_local_networking() -> None:
+    project = f"user-{os.getuid()}"
+    runner = FakeRunner(
+        [
+            Result(json.dumps([{"name": project}]), "", 0),
+            Result("true\n", "", 0),
+            Result("false\n", "", 0),
+        ]
+    )
+
+    try:
+        Incus(runner).verify_host_access()
+    except SandboxshError as exc:
+        assert "sandboxsh setup" in str(exc)
+    else:
+        raise AssertionError("shared default network project was accepted")
+
+
 def test_acl_update_explicitly_scopes_restricted_project(
     tmp_path: Path, monkeypatch
 ) -> None:

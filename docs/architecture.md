@@ -25,15 +25,24 @@ Incus packages provide two local groups/sockets:
 
 - `incus-admin` / `unix.socket`: full daemon control and effectively host root;
 - `incus` / `user.socket`: the `incus-user` proxy, which creates a restricted
-  project named `user-<uid>` and a per-user managed network. Every subprocess is
-invoked with `incus --force-local --project user-<uid>` and an isolated
-`INCUS_CONF` whose default is `local`, so a configured TLS remote or different
-current project cannot redirect lifecycle commands.
+  project named `user-<uid>` and a per-user managed network.
 
-Current Incus creates that user project with `restricted=true`, project-local
-images/profiles/storage volumes, an allowed managed network, and host disk paths
-limited to the user's home. Low-level VM settings and dangerous device classes
-remain blocked. `sandboxsh` verifies rather than silently weakening this setup.
+Incus initially creates that project with `features.networks=false`, so its
+per-user bridge is owned by the `default` network project and the restricted user
+cannot manage the ACLs protecting it. During installation, `sandboxsh setup` uses
+one narrowly-scoped, trusted `sudo` migration: it refuses a project containing
+resources beyond its default profile, enables `features.networks`, and creates a
+same-named managed bridge in
+the user project. Routine operations never use administrator access.
+
+Normal lifecycle subprocesses are invoked with
+`incus --force-local --project user-<uid>` and an isolated `INCUS_CONF` whose
+default is `local`, so a configured TLS remote or different current project
+cannot redirect them. Raw ACL requests cannot accept the global project flag, so
+they instead include the same project explicitly in the API URL. `sandboxsh`
+verifies `restricted=true` and `features.networks=true`. Images, profiles, storage
+volumes, networks, and ACLs are then project-local; host disk paths remain limited
+to the user's home, and low-level VM settings and dangerous devices stay blocked.
 
 The live workspace requirement is the reason host-path disks are allowed at all.
 The launcher adds a second policy layer: project-internal paths are expected;

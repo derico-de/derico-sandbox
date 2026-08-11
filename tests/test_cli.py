@@ -28,8 +28,28 @@ def test_init_writes_secure_defaults(tmp_path: Path) -> None:
 def test_help_exposes_expected_lifecycle() -> None:
     result = CliRunner().invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for command in ("init", "up", "down", "recreate", "destroy", "exec", "image", "update"):
+    for command in (
+        "init",
+        "up",
+        "down",
+        "recreate",
+        "destroy",
+        "exec",
+        "image",
+        "setup",
+        "update",
+    ):
         assert command in result.output
+
+
+def test_setup_prepares_project_local_network(monkeypatch) -> None:
+    monkeypatch.setattr("sandboxsh.cli.shutil.which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(Incus, "setup_project_network", lambda self: "incusbr-test")
+
+    result = CliRunner().invoke(cli, ["setup"])
+
+    assert result.exit_code == 0, result.output
+    assert "project-local managed network incusbr-test" in result.output
 
 
 @pytest.mark.parametrize(
@@ -81,6 +101,54 @@ def test_update_reinstalls_requested_github_revision(
         )
     ]
     assert "Updated sandboxsh from" in result.output
+
+
+def test_image_delete_allows_cleanup_before_network_migration(monkeypatch) -> None:
+    calls = {}
+
+    def verify(self, *, require_project_network: bool = True):
+        calls["require_project_network"] = require_project_network
+        return self.project
+
+    def command(self, *args, **kwargs):
+        calls["command"] = args
+        return Result("", "", 0)
+
+    monkeypatch.setattr(Incus, "verify_host_access", verify)
+    monkeypatch.setattr(Incus, "image_exists", lambda self, image: True)
+    monkeypatch.setattr(Incus, "command", command)
+
+    result = CliRunner().invoke(cli, ["image", "delete", "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == {
+        "require_project_network": False,
+        "command": ("image", "delete", "sandboxsh/base"),
+    }
+
+
+def test_destroy_allows_cleanup_before_network_migration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / ".sandboxsh.json"
+    path.write_text(json.dumps({"name": "legacy", "dirs": ["."]}))
+    calls = {}
+
+    def verify(self, *, require_project_network: bool = True):
+        calls["require_project_network"] = require_project_network
+        return self.project
+
+    def destroy(self, project, *, cleanup_acl: bool = True):
+        calls["cleanup_acl"] = cleanup_acl
+
+    monkeypatch.setattr(Incus, "verify_host_access", verify)
+    monkeypatch.setattr(Incus, "project_has_local_networking", lambda self: False)
+    monkeypatch.setattr(Incus, "destroy", destroy)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "destroy", "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == {"require_project_network": False, "cleanup_acl": False}
 
 
 def test_guest_exec_uses_dev_identity_and_configured_workdir(tmp_path: Path) -> None:
