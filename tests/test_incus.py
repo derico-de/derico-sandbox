@@ -107,13 +107,44 @@ def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
     assert any("query" in command for command, _ in runner.commands)
 
 
+def test_delete_acl_explicitly_scopes_restricted_project(tmp_path: Path) -> None:
+    class RestrictedDeleteRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            operation = list(command)[4:]
+            if operation[:3] == ["network", "acl", "delete"]:
+                return Result(
+                    "",
+                    'Error: User does not have permission for project "default"',
+                    1,
+                )
+            return Result("", "", 0)
+
+    runner = RestrictedDeleteRunner()
+    incus = Incus(runner)
+    project = config(tmp_path)
+
+    incus.delete_acl(project)
+
+    query = next(command for command, _ in runner.commands if "query" in command)
+    assert query[:5] == ["incus", "--force-local", "query", "-X", "DELETE"]
+    assert query[-1] == f"/1.0/network-acls/{project.acl_name}?project={incus.project}"
+    assert "--project" not in query
+
+
 def test_delete_acl_is_idempotent_without_listing(tmp_path: Path) -> None:
     runner = FakeRunner([Result("", "Error: Network ACL not found", 1)])
     incus = Incus(runner)
 
     incus.delete_acl(config(tmp_path))
 
-    assert runner.commands[0][0][4:7] == ["network", "acl", "delete"]
+    assert runner.commands[0][0][:5] == [
+        "incus",
+        "--force-local",
+        "query",
+        "-X",
+        "DELETE",
+    ]
     assert runner.commands[0][1]["check"] is False
 
 

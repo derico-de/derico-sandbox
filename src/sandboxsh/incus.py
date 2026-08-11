@@ -49,6 +49,24 @@ class Incus:
             env=self.environment,
         )
 
+    def _project_query(
+        self,
+        action: str,
+        path: str,
+        *,
+        data: dict | None = None,
+        check: bool = True,
+    ) -> Result:
+        endpoint = f"{path}?{urlencode({'project': self.project})}"
+        command = ["incus", "--force-local", "query", "-X", action]
+        if data is not None:
+            command.extend(("-d", json.dumps(data)))
+        command.append(endpoint)
+        # Incus rejects the global --project option for raw queries. Preserve the
+        # forced local socket and isolated client configuration while scoping the
+        # API request explicitly in its URL.
+        return self.runner.run(command, check=check, env=self.environment)
+
     def verify_host_access(self) -> str:
         """Require the restricted incus-user socket, never incus-admin by default."""
         try:
@@ -198,30 +216,10 @@ class Incus:
         )
         if created.returncode and not self._already_exists(created):
             raise self._probe_error(f"create network ACL {config.acl_name}", created)
-        # `incus network acl edit` can lose the selected project when it sends
-        # its update, causing restricted users to be checked against `default`.
-        # Scope the API request explicitly so the update stays in the per-user
-        # project selected by the restricted incus-user socket.
-        endpoint = (
-            f"/1.0/network-acls/{quote(config.acl_name, safe='')}?"
-            + urlencode({"project": self.project})
-        )
-        # Incus rejects the global --project option for raw queries, so this
-        # intentionally bypasses command() while preserving the forced local
-        # socket, isolated client configuration, and explicit project in the URL.
-        self.runner.run(
-            [
-                "incus",
-                "--force-local",
-                "query",
-                "-X",
-                "PUT",
-                "-d",
-                json.dumps(policy.document),
-                endpoint,
-            ],
-            env=self.environment,
-        )
+        # High-level ACL edit/delete commands can lose the selected project and
+        # fall back to `default`. Use an explicitly project-scoped API request.
+        path = f"/1.0/network-acls/{quote(config.acl_name, safe='')}"
+        self._project_query("PUT", path, data=policy.document)
         return policy
 
     def attach_acl(self, config: ProjectConfig, *, instance: str | None = None) -> None:
@@ -252,9 +250,8 @@ class Incus:
             self.command("config", "device", "set", target, "eth0", key, value)
 
     def delete_acl(self, config: ProjectConfig) -> None:
-        deleted = self.command(
-            "network", "acl", "delete", config.acl_name, check=False
-        )
+        path = f"/1.0/network-acls/{quote(config.acl_name, safe='')}"
+        deleted = self._project_query("DELETE", path, check=False)
         if deleted.returncode and not self._not_found(deleted):
             raise self._probe_error(f"delete network ACL {config.acl_name}", deleted)
 
