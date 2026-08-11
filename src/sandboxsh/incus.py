@@ -90,6 +90,11 @@ class Incus:
         return "not found" in output or "doesn't exist" in output
 
     @staticmethod
+    def _already_exists(result: Result) -> bool:
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        return "already exists" in output
+
+    @staticmethod
     def _probe_error(label: str, result: Result) -> SandboxshError:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown Incus error"
         return SandboxshError(f"cannot query {label}: {detail}")
@@ -180,16 +185,6 @@ class Incus:
         except ValueError:
             return None
 
-    def _acl_exists(self, acl: str) -> bool:
-        result = self.command("network", "acl", "list", "--format=json", check=False)
-        if result.returncode:
-            raise self._probe_error(f"network ACL {acl}", result)
-        try:
-            entries = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise SandboxshError("Incus returned invalid network ACL data") from exc
-        return any(item.get("name") == acl for item in entries)
-
     def apply_acl(self, config: ProjectConfig) -> AclPolicy:
         network = self.default_network()
         gateway = self.bridge_gateway(network)
@@ -198,8 +193,11 @@ class Incus:
                 "cannot determine the Incus bridge gateway; refusing an unscoped ingress rule"
             )
         policy = build_acl_policy(config, bridge_gateway=gateway)
-        if not self._acl_exists(config.acl_name):
-            self.command("network", "acl", "create", config.acl_name)
+        created = self.command(
+            "network", "acl", "create", config.acl_name, check=False
+        )
+        if created.returncode and not self._already_exists(created):
+            raise self._probe_error(f"create network ACL {config.acl_name}", created)
         # `incus network acl edit` can lose the selected project when it sends
         # its update, causing restricted users to be checked against `default`.
         # Scope the API request explicitly so the update stays in the per-user
@@ -254,8 +252,11 @@ class Incus:
             self.command("config", "device", "set", target, "eth0", key, value)
 
     def delete_acl(self, config: ProjectConfig) -> None:
-        if self._acl_exists(config.acl_name):
-            self.command("network", "acl", "delete", config.acl_name)
+        deleted = self.command(
+            "network", "acl", "delete", config.acl_name, check=False
+        )
+        if deleted.returncode and not self._not_found(deleted):
+            raise self._probe_error(f"delete network ACL {config.acl_name}", deleted)
 
     def create_instance(self, config: ProjectConfig) -> AclPolicy:
         if not self.image_exists(config.image):

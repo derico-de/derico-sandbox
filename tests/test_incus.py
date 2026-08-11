@@ -78,6 +78,57 @@ def test_acl_update_explicitly_scopes_restricted_project(
     assert "--project" not in query
 
 
+def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class StaleAclRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            operation = list(command)[4:]
+            if operation[:4] == ["profile", "device", "get", "default"]:
+                return Result("sandboxshbr0\n", "", 0)
+            if operation[:3] == ["network", "get", "sandboxshbr0"]:
+                return Result("10.10.10.1/24\n", "", 0)
+            if operation[:4] == ["network", "acl", "list", "--format=json"]:
+                return Result("[]", "", 0)
+            if operation[:3] == ["network", "acl", "create"]:
+                error = 'Error: The network ACL already exists'
+                if kwargs.get("check", True):
+                    raise CommandError(list(command), 1, error)
+                return Result("", error, 1)
+            return Result("", "", 0)
+
+    monkeypatch.setattr(security, "DEFAULT_ENDPOINTS", ())
+    runner = StaleAclRunner()
+    incus = Incus(runner)
+
+    incus.apply_acl(config(tmp_path))
+
+    assert any("query" in command for command, _ in runner.commands)
+
+
+def test_delete_acl_is_idempotent_without_listing(tmp_path: Path) -> None:
+    runner = FakeRunner([Result("", "Error: Network ACL not found", 1)])
+    incus = Incus(runner)
+
+    incus.delete_acl(config(tmp_path))
+
+    assert runner.commands[0][0][4:7] == ["network", "acl", "delete"]
+    assert runner.commands[0][1]["check"] is False
+
+
+def test_delete_acl_preserves_unexpected_errors(tmp_path: Path) -> None:
+    runner = FakeRunner([Result("", "permission denied", 1)])
+    incus = Incus(runner)
+
+    try:
+        incus.delete_acl(config(tmp_path))
+    except SandboxshError as exc:
+        assert "permission denied" in str(exc)
+    else:
+        raise AssertionError("unexpected ACL deletion error was suppressed")
+
+
 def test_guest_ip_uses_eth0_not_docker0(tmp_path: Path) -> None:
     payload = [
         {
