@@ -154,7 +154,9 @@ builder is protected by the same ACL; add an exceptional build-only hostname wit
 not accepted. Private/RFC1918 destinations are rejected unless the endpoint sets
 `"allow_private": true`; that expanded authority is highlighted during approval.
 Loopback, link-local/metadata, multicast, unspecified, and reserved destinations
-are always rejected.
+are always rejected. A built-in endpoint that is temporarily unresolvable is
+omitted from the ACL (fail-closed) and reported by the CLI; an unresolvable
+project-added endpoint remains an error.
 
 `firewall.enabled=false` is rejected unless the trusted host shell explicitly
 sets `SANDBOXSH_ALLOW_OPEN_NETWORK=1`.

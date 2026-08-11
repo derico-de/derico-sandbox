@@ -12,7 +12,12 @@ from .config import CONFIG_NAME, ProjectConfig, find_config, load_config, saniti
 from .errors import SandboxshError
 from .incus import CREDS_VOLUME, DEFAULT_POOL, Incus
 from .process import Runner
-from .security import build_acl_policy, ensure_project_approvals, revoke_project_approvals
+from .security import (
+    AclPolicy,
+    build_acl_policy,
+    ensure_project_approvals,
+    revoke_project_approvals,
+)
 
 
 def handled(function):
@@ -107,6 +112,15 @@ def _verify_and_approve(context: Context, config: ProjectConfig) -> None:
     ensure_project_approvals(config, prompt=True)
 
 
+def _report_unresolved_defaults(policy: AclPolicy) -> None:
+    if policy.unresolved_defaults:
+        click.echo(
+            "Skipped unavailable built-in endpoint(s): "
+            + ", ".join(policy.unresolved_defaults),
+            err=True,
+        )
+
+
 def _up(context: Context, *, enter_shell: bool) -> None:
     config = context.config()
     _verify_and_approve(context, config)
@@ -114,13 +128,15 @@ def _up(context: Context, *, enter_shell: bool) -> None:
         context.incus.assert_immutable_config(config)
         # Tighten changed authority before a persistent guest's startup services
         # can run under stale ACL rules.
-        context.incus.apply_acl(config)
+        policy = context.incus.apply_acl(config)
+        _report_unresolved_defaults(policy)
         context.incus.attach_acl(config)
         context.incus.start(config)
         click.echo(f"Attached to persistent VM {config.instance_name}.", err=True)
     else:
         click.echo(f"Creating persistent VM {config.instance_name}...", err=True)
         policy = context.incus.create_instance(config)
+        _report_unresolved_defaults(policy)
         click.echo(
             f"Created VM with {len(policy.document['egress'])} host-enforced egress rules.",
             err=True,
@@ -255,6 +271,7 @@ def refresh_firewall_command(context: Context) -> None:
     config = context.config()
     _verify_and_approve(context, config)
     policy = context.incus.apply_acl(config)
+    _report_unresolved_defaults(policy)
     context.incus.attach_acl(config)
     for host, addresses in sorted(policy.resolutions.items()):
         click.echo(f"{host}: {', '.join(addresses)}")
@@ -290,6 +307,7 @@ def plan_command(context: Context) -> None:
         "sharedAgentCredentials": config.agent_credentials,
         "guestLocalOtherCredentials": True,
         "customNetworkAuthorityRequiresHostApproval": bool(config.firewall_allow),
+        "unresolvedBuiltInEndpoints": list(policy.unresolved_defaults),
         "networkAcl": policy.document,
     }
     click.echo(json.dumps(document, indent=2))
@@ -309,7 +327,8 @@ def image_build_command(context: Context, image: str, source: str) -> None:
     """Build and publish the reusable Docker/agent-enabled VM image."""
     context.incus.verify_host_access()
     click.echo(f"Building {image} from {source}; this can take several minutes.")
-    context.incus.build_image(image=image, source=source)
+    policy = context.incus.build_image(image=image, source=source)
+    _report_unresolved_defaults(policy)
     click.echo(f"Published {image}.")
 
 

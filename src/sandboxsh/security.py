@@ -235,6 +235,7 @@ def resolve_host(value: str) -> tuple[str, ...]:
 class AclPolicy:
     document: dict
     resolutions: dict[str, tuple[str, ...]]
+    unresolved_defaults: tuple[str, ...]
 
 
 def _validate_destination(address: str, *, allow_private: bool, host: str) -> None:
@@ -277,11 +278,27 @@ def build_acl_policy(
                 "egress": [{"action": "allow", "state": "enabled"}],
             },
             resolutions={},
+            unresolved_defaults=(),
         )
 
     grouped: dict[tuple[str, tuple[int, ...]], set[str]] = defaultdict(set)
     resolutions: dict[str, tuple[str, ...]] = {}
-    for entry in (*DEFAULT_ENDPOINTS, *config.firewall_allow):
+    unresolved_defaults = []
+    for entry in DEFAULT_ENDPOINTS:
+        try:
+            addresses = resolve_host(entry.host)
+        except SandboxshError:
+            # Omitting an unavailable built-in endpoint keeps the ACL fail-closed.
+            # Explicit project endpoints remain strict below because the user asked
+            # for those destinations and may depend on them.
+            unresolved_defaults.append(entry.host)
+            continue
+        for address in addresses:
+            _validate_destination(address, allow_private=entry.allow_private, host=entry.host)
+        resolutions[entry.host] = addresses
+        grouped[(entry.protocol, entry.ports)].update(addresses)
+
+    for entry in config.firewall_allow:
         addresses = resolve_host(entry.host)
         for address in addresses:
             _validate_destination(address, allow_private=entry.allow_private, host=entry.host)
@@ -322,4 +339,5 @@ def build_acl_policy(
             "egress": egress,
         },
         resolutions=resolutions,
+        unresolved_defaults=tuple(unresolved_defaults),
     )

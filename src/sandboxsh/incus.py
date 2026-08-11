@@ -458,7 +458,7 @@ class Incus:
         *,
         image: str = "sandboxsh/base",
         source: str = "images:debian/13/cloud",
-    ) -> None:
+    ) -> AclPolicy:
         builder = f"sandboxsh-image-builder-{os.getuid()}"
         extra_hosts = tuple(
             FirewallEntry(host.strip())
@@ -498,7 +498,7 @@ class Incus:
         try:
             # Supply-chain scripts run only after the same host-enforced ACL used
             # for project VMs is attached to the stopped builder.
-            self.apply_acl(build_config)
+            policy = self.apply_acl(build_config)
             self.attach_acl(build_config, instance=builder)
             self.command("start", builder)
             self.wait_for_agent(builder, timeout=600)
@@ -527,3 +527,4 @@ class Incus:
         finally:
             self.command("delete", builder, "--force", check=False)
             self.delete_acl(build_config)
+        return policy

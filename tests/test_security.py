@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from sandboxsh import security
-from sandboxsh.config import load_config
+from sandboxsh.config import FirewallEntry, load_config
 from sandboxsh.errors import SandboxshError
 
 
@@ -41,6 +41,48 @@ def test_acl_is_default_deny_with_only_resolved_destinations(
     ]
     assert policy.document["ingress"][0]["source"] == "10.10.10.1"
     assert policy.document["ingress"][0]["destination_port"] == "3000"
+
+
+def test_unresolvable_default_endpoint_is_omitted_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = project_config(tmp_path)
+    monkeypatch.setattr(
+        security,
+        "DEFAULT_ENDPOINTS",
+        (
+            FirewallEntry("statsig.anthropic.com", (443,)),
+            FirewallEntry("api.anthropic.com", (443,)),
+        ),
+    )
+
+    def resolve(host: str) -> tuple[str, ...]:
+        if host == "statsig.anthropic.com":
+            raise SandboxshError("cannot resolve allowlisted host statsig.anthropic.com")
+        return ("93.184.216.34",)
+
+    monkeypatch.setattr(security, "resolve_host", resolve)
+
+    policy = security.build_acl_policy(config)
+
+    assert policy.resolutions == {"api.anthropic.com": ("93.184.216.34",)}
+    assert policy.unresolved_defaults == ("statsig.anthropic.com",)
+    assert policy.document["egress"][0]["destination"] == "93.184.216.34"
+
+
+def test_unresolvable_project_endpoint_remains_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = project_config(tmp_path, firewall={"allow": ["required.test"]})
+    monkeypatch.setattr(security, "DEFAULT_ENDPOINTS", ())
+
+    def fail_resolution(host: str) -> tuple[str, ...]:
+        raise SandboxshError(f"cannot resolve allowlisted host {host}")
+
+    monkeypatch.setattr(security, "resolve_host", fail_resolution)
+
+    with pytest.raises(SandboxshError, match="cannot resolve allowlisted host required.test"):
+        security.build_acl_policy(config)
 
 
 def test_private_destination_needs_explicit_private_approval(
