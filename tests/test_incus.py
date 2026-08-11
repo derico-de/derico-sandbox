@@ -94,6 +94,7 @@ def test_setup_project_network_migrates_empty_incus_user_project() -> None:
         "network",
         "create",
         f"incusbr-{os.getuid()}",
+        "--type=bridge",
     ] in commands
 
 

@@ -132,7 +132,13 @@ class Incus:
         )
         if existing.returncode:
             created = self._admin_command(
-                "--project", self.project, "network", "create", network, check=False
+                "--project",
+                self.project,
+                "network",
+                "create",
+                network,
+                "--type=bridge",
+                check=False,
             )
             if created.returncode and not self._already_exists(created):
                 rollback = None
