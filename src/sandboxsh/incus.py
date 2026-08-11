@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import grp
+import hashlib
 import ipaddress
 import json
 import os
@@ -49,147 +50,40 @@ class Incus:
             env=self.environment,
         )
 
+    def _host_acl_name(self, config: ProjectConfig) -> str:
+        prefix = f"acl-u{os.getuid()}-"
+        digest = hashlib.sha256(config.acl_name.encode()).hexdigest()[:8]
+        stem_length = 63 - len(prefix) - len(digest) - 1
+        return f"{prefix}{config.acl_name[:stem_length]}-{digest}"
+
     def _admin_command(
         self,
         *args: str,
         check: bool = True,
     ) -> Result:
-        """Run a narrowly-scoped, explicitly requested host setup operation."""
+        """Run a fixed ACL control-plane operation through trusted host sudo."""
         return self.runner.run(
             ["sudo", "incus", "--force-local", *args],
             check=check,
         )
 
-    def setup_project_network(self) -> str:
-        """Move an empty incus-user project onto its own managed network namespace."""
-        feature = self._admin_command(
-            "project", "get", self.project, "features.networks", check=False
-        )
-        if feature.returncode:
-            detail = feature.stderr.strip() or feature.stdout.strip() or "project not found"
-            raise SandboxshError(
-                f"cannot inspect restricted Incus project {self.project}: {detail}. "
-                "Ensure incus-user.socket is running and the user project has been initialized."
-            )
-
-        network_result = self._admin_command(
-            "--project",
-            self.project,
-            "profile",
-            "device",
-            "get",
-            "default",
-            "eth0",
-            "network",
-            check=False,
-        )
-        network = network_result.stdout.strip()
-        if network_result.returncode or not network:
-            raise SandboxshError(
-                f"restricted Incus project {self.project} has no managed default network"
-            )
-
-        feature_value = feature.stdout.strip()
-        changed_feature = False
-        if feature_value != "true":
-            if feature_value not in ("", "false"):
-                raise SandboxshError(
-                    f"unexpected features.networks value for {self.project}: {feature_value!r}"
-                )
-            projects = self._admin_command("project", "list", "--format=json")
-            try:
-                project_records = json.loads(projects.stdout)
-            except json.JSONDecodeError as exc:
-                raise SandboxshError("Incus returned invalid project data during setup") from exc
-            project_record = next(
-                (record for record in project_records if record.get("name") == self.project),
-                None,
-            )
-            if project_record is None:
-                raise SandboxshError(f"Incus project {self.project!r} disappeared during setup")
-            default_profile = f"/1.0/profiles/default?project={self.project}"
-            resources = [
-                value
-                for value in project_record.get("used_by", [])
-                if value != default_profile
-            ]
-            if resources:
-                formatted = "\n  ".join(resources)
-                raise SandboxshError(
-                    f"cannot enable project-local networking while {self.project} contains "
-                    f"resources:\n  {formatted}\nRemove them, run `sandboxsh setup`, then "
-                    "recreate them. Legacy cleanup remains available through "
-                    "`sandboxsh destroy`, `sandboxsh image delete`, and "
-                    "`sandboxsh credentials reset`."
-                )
-            self._admin_command(
-                "project", "set", self.project, "features.networks=true"
-            )
-            changed_feature = True
-
-        existing = self._admin_command(
-            "--project", self.project, "network", "show", network, check=False
-        )
-        if existing.returncode:
-            created = self._admin_command(
-                "--project",
-                self.project,
-                "network",
-                "create",
-                network,
-                "--type=bridge",
-                check=False,
-            )
-            if created.returncode and not self._already_exists(created):
-                rollback = None
-                if changed_feature:
-                    rollback = self._admin_command(
-                        "project",
-                        "set",
-                        self.project,
-                        "features.networks=false",
-                        check=False,
-                    )
-                if rollback is not None and rollback.returncode:
-                    create_detail = created.stderr.strip() or created.stdout.strip()
-                    rollback_detail = rollback.stderr.strip() or rollback.stdout.strip()
-                    raise SandboxshError(
-                        f"cannot create project-local network {network}: {create_detail}; "
-                        f"rollback to features.networks=false also failed: {rollback_detail}"
-                    )
-                raise self._probe_error(f"create project-local network {network}", created)
-
-        return network
-
-    def _project_query(
+    def _admin_acl_query(
         self,
         action: str,
-        path: str,
+        acl: str,
         *,
         data: dict | None = None,
         check: bool = True,
     ) -> Result:
-        endpoint = f"{path}?{urlencode({'project': self.project})}"
-        command = ["incus", "--force-local", "query", "-X", action]
+        path = f"/1.0/network-acls/{quote(acl, safe='')}"
+        endpoint = f"{path}?{urlencode({'project': 'default'})}"
+        command = ["sudo", "incus", "--force-local", "query", "-X", action]
         if data is not None:
             command.extend(("-d", json.dumps(data)))
         command.append(endpoint)
-        # Incus rejects the global --project option for raw queries. Preserve the
-        # forced local socket and isolated client configuration while scoping the
-        # API request explicitly in its URL.
-        return self.runner.run(command, check=check, env=self.environment)
+        return self.runner.run(command, check=check)
 
-    def project_has_local_networking(self) -> bool:
-        value = self.command(
-            "project", "get", self.project, "features.networks"
-        ).stdout.strip()
-        if value not in ("true", "false", ""):
-            raise SandboxshError(
-                f"unexpected features.networks value for {self.project}: {value!r}"
-            )
-        return value == "true"
-
-    def verify_host_access(self, *, require_project_network: bool = True) -> str:
+    def verify_host_access(self) -> str:
         """Require the restricted incus-user socket, never incus-admin by default."""
         try:
             admin = grp.getgrnam("incus-admin")
@@ -222,10 +116,13 @@ class Incus:
         restricted = self.command("project", "get", expected, "restricted").stdout.strip()
         if restricted != "true":
             raise SandboxshError(f"Incus project {expected!r} is not restricted")
-        if require_project_network and not self.project_has_local_networking():
+        network_feature = self.command(
+            "project", "get", expected, "features.networks"
+        ).stdout.strip()
+        if network_feature not in ("", "false"):
             raise SandboxshError(
-                f"Incus project {expected!r} does not have project-local networking; "
-                "run `sandboxsh setup` from the trusted host"
+                f"Incus project {expected!r} must use features.networks=false "
+                "for its incus-user managed bridge"
             )
         return expected
 
@@ -338,21 +235,28 @@ class Incus:
                 "cannot determine the Incus bridge gateway; refusing an unscoped ingress rule"
             )
         policy = build_acl_policy(config, bridge_gateway=gateway)
-        created = self.command(
-            "network", "acl", "create", config.acl_name, check=False
+        # incus-user owns its bridge in the default network project, so its
+        # restricted certificate can attach ACLs but cannot manage them. Keep
+        # this privileged surface limited to fixed ACL CRUD operations.
+        acl = self._host_acl_name(config)
+        created = self._admin_command(
+            "--project",
+            "default",
+            "network",
+            "acl",
+            "create",
+            acl,
+            check=False,
         )
         if created.returncode and not self._already_exists(created):
-            raise self._probe_error(f"create network ACL {config.acl_name}", created)
-        # High-level ACL edit/delete commands can lose the selected project and
-        # fall back to `default`. Use an explicitly project-scoped API request.
-        path = f"/1.0/network-acls/{quote(config.acl_name, safe='')}"
-        self._project_query("PUT", path, data=policy.document)
+            raise self._probe_error(f"create network ACL {acl}", created)
+        self._admin_acl_query("PUT", acl, data=policy.document)
         return policy
 
     def attach_acl(self, config: ProjectConfig, *, instance: str | None = None) -> None:
         target = instance or config.instance_name
         settings = {
-            "security.acls": config.acl_name,
+            "security.acls": self._host_acl_name(config),
             "security.acls.default.ingress.action": "reject",
             "security.acls.default.egress.action": "reject",
             "security.acls.default.ingress.logged": "true",
@@ -377,10 +281,10 @@ class Incus:
             self.command("config", "device", "set", target, "eth0", key, value)
 
     def delete_acl(self, config: ProjectConfig) -> None:
-        path = f"/1.0/network-acls/{quote(config.acl_name, safe='')}"
-        deleted = self._project_query("DELETE", path, check=False)
+        acl = self._host_acl_name(config)
+        deleted = self._admin_acl_query("DELETE", acl, check=False)
         if deleted.returncode and not self._not_found(deleted):
-            raise self._probe_error(f"delete network ACL {config.acl_name}", deleted)
+            raise self._probe_error(f"delete network ACL {acl}", deleted)
 
     def create_instance(self, config: ProjectConfig) -> AclPolicy:
         if not self.image_exists(config.image):
@@ -464,9 +368,12 @@ class Incus:
             self._configure_git(config.instance_name)
             self._verify_guest(config.instance_name)
             return policy
-        except Exception:
+        except Exception as error:
             self.command("delete", config.instance_name, "--force", check=False)
-            self.delete_acl(config)
+            try:
+                self.delete_acl(config)
+            except Exception as cleanup_error:
+                error.add_note(f"ACL cleanup also failed: {cleanup_error}")
             raise
 
     def _configure_git(self, instance: str) -> None:
@@ -533,13 +440,12 @@ class Incus:
             return
         self.command("stop", config.instance_name, "--force")
 
-    def destroy(self, config: ProjectConfig, *, cleanup_acl: bool = True) -> None:
+    def destroy(self, config: ProjectConfig) -> None:
         if self.exists(config.instance_name):
             self.command("delete", config.instance_name, "--force")
             if self.exists(config.instance_name):
                 raise SandboxshError(f"Incus did not delete {config.instance_name}")
-        if cleanup_acl:
-            self.delete_acl(config)
+        self.delete_acl(config)
 
     def guest_ip(self, config: ProjectConfig) -> str | None:
         record = self._instance_record(config.instance_name)
@@ -639,6 +545,7 @@ class Incus:
             "--device",
             "root,size=30GiB",
         )
+        failure: Exception | None = None
         try:
             # Supply-chain scripts run only after the same host-enforced ACL used
             # for project VMs is attached to the stopped builder.
@@ -668,7 +575,15 @@ class Incus:
             self.command("exec", builder, "--", "cloud-init", "clean", "--logs", "--machine-id")
             self.command("stop", builder, "--force")
             self.command("publish", builder, "--alias", image, "--reuse")
+        except Exception as error:
+            failure = error
+            raise
         finally:
             self.command("delete", builder, "--force", check=False)
-            self.delete_acl(build_config)
+            try:
+                self.delete_acl(build_config)
+            except Exception as cleanup_error:
+                if failure is None:
+                    raise
+                failure.add_note(f"ACL cleanup also failed: {cleanup_error}")
         return policy

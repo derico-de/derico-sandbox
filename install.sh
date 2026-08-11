@@ -90,17 +90,6 @@ pipx install --force "$INSTALL_SOURCE"
 SANDBOXSH_BIN="${PIPX_BIN_DIR:-$HOME/.local/bin}/sandboxsh"
 [ -x "$SANDBOXSH_BIN" ] || fail "pipx installed sandboxsh but $SANDBOXSH_BIN is missing"
 
-# Trigger incus-user's per-user project creation in a fresh process so newly
-# granted `incus` group membership is visible without requiring a login first.
-say "Initializing the restricted Incus user project"
-sudo -u "$USER" -H incus --force-local project list >/dev/null
-
-# incus-user deliberately starts with features.networks=false and a bridge in
-# the default network project. Move an empty new user project to its own network
-# namespace so the restricted user can enforce project-local network ACLs.
-say "Preparing project-local Incus networking"
-"$SANDBOXSH_BIN" setup
-
 if [ "$NEED_LOGIN" = 1 ]; then
     echo
     echo "Log out and back in so the new incus group membership applies. Then run:"

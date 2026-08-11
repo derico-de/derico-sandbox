@@ -27,22 +27,20 @@ Incus packages provide two local groups/sockets:
 - `incus` / `user.socket`: the `incus-user` proxy, which creates a restricted
   project named `user-<uid>` and a per-user managed network.
 
-Incus initially creates that project with `features.networks=false`, so its
-per-user bridge is owned by the `default` network project and the restricted user
-cannot manage the ACLs protecting it. During installation, `sandboxsh setup` uses
-one narrowly-scoped, trusted `sudo` migration: it refuses a project containing
-resources beyond its default profile, enables `features.networks`, and creates a
-same-named managed bridge in
-the user project. Routine operations never use administrator access.
-
-Normal lifecycle subprocesses are invoked with
+Normal subprocesses are invoked with
 `incus --force-local --project user-<uid>` and an isolated `INCUS_CONF` whose
 default is `local`, so a configured TLS remote or different current project
-cannot redirect them. Raw ACL requests cannot accept the global project flag, so
-they instead include the same project explicitly in the API URL. `sandboxsh`
-verifies `restricted=true` and `features.networks=true`. Images, profiles, storage
-volumes, networks, and ACLs are then project-local; host disk paths remain limited
-to the user's home, and low-level VM settings and dangerous devices stay blocked.
+cannot redirect lifecycle commands. Current Incus creates the user project with
+`restricted=true`, project-local images/profiles/storage volumes, host disk paths
+limited to the user's home, and `features.networks=false`. The last setting means
+the per-user bridge and its ACL namespace are owned by `default`; Incus 6.0 does
+not support managed bridges in non-default projects.
+
+The trusted host therefore uses interactive `sudo incus` only for UID-scoped ACL
+create/update/delete operations in the default network project. Policy generation,
+private-address checks, and approval of project-added destinations happen before
+that privileged call. All VM, image, storage, device, and mount lifecycle stays on
+the restricted socket. Low-level settings and dangerous devices remain blocked.
 
 The live workspace requirement is the reason host-path disks are allowed at all.
 The launcher adds a second policy layer: project-internal paths are expected;

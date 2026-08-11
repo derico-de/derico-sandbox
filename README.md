@@ -23,7 +23,10 @@ kernel. Neither the host Docker socket nor the Incus control socket is exposed.
 - Egress is enforced outside guest control with an Incus network ACL attached to
   the VM NIC. The ACL defaults to reject and permits only resolved built-in agent,
   source-control, package, and Docker-registry endpoints plus approved project
-  additions. Guest root and Docker cannot disable this ACL.
+  additions. Guest root and Docker cannot disable this ACL. Incus owns the
+  incus-user bridge/ACL namespace in its `default` network project, so only fixed
+  ACL create/update/delete operations use trusted host `sudo`; VM lifecycle stays
+  on the restricted user socket.
 - Only declared development ports accept host-to-VM traffic. They are reached at
   the VM's private address, avoiding host-port collisions between projects.
 - CPU, memory, and root-disk limits are enforced by Incus.
@@ -37,7 +40,7 @@ See [SECURITY.md](SECURITY.md) for the threat model and residual risks.
 
 ## Install
 
-Host requirements: Linux, KVM, systemd, current Incus, Python 3.11+, and `pipx`.
+Host requirements: Linux, KVM, systemd, current Incus, Python 3.11+, `pipx`, and `sudo`.
 On a Debian/Ubuntu-style host, run the installer directly from GitHub:
 
 ```bash
@@ -55,23 +58,15 @@ Update an existing pipx installation later with:
 
 ```bash
 sandboxsh update
-sandboxsh setup    # idempotent; required once when upgrading older installations
 ```
 
 Use `sandboxsh update --ref <tag-or-commit>` to install a specific revision.
-If `setup` reports resources in an older Incus user project, remove each project
-VM from its checkout with `sandboxsh destroy`, then remove the disposable golden
-image with `sandboxsh image delete`. An existing shared credential volume also
-blocks the Incus feature migration; `sandboxsh credentials reset` removes it but
-loses the shared agent logins, so back up anything important first. Run
-`sandboxsh setup` again and rebuild/recreate afterward.
 
 The installer never adds you to `incus-admin`. A fresh Incus daemon is minimally
-initialized, then `incus-user` creates the restricted `user-<uid>` project. Incus
-initially places its per-user bridge in the default network project with
-`features.networks=false`; the installer uses a one-time trusted `sudo` operation
-to give an empty user project its own network namespace and managed bridge. All
-routine VM and ACL operations then remain confined to the restricted project.
+initialized, then `incus-user` creates the restricted `user-<uid>` project and a
+per-user managed bridge when you first use it. Expect a host `sudo` prompt when
+sandboxsh creates, refreshes, or removes the bridge's ACL; no other routine Incus
+operations use administrator authority.
 
 The default golden image is built from `images:debian/13/cloud`. Override it if
 needed:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from sandboxsh import security
 from sandboxsh.config import load_config
-from sandboxsh.errors import CommandError, SandboxshError
+from sandboxsh.errors import SandboxshError
 from sandboxsh.incus import Incus
 from sandboxsh.process import Result
 
@@ -42,215 +42,67 @@ def test_every_incus_command_forces_local_restricted_project() -> None:
     assert runner.commands[0][1]["env"]["INCUS_CONF"].endswith("/sandboxsh/incus-client")
 
 
-def test_setup_project_network_migrates_empty_incus_user_project() -> None:
-    class SetupRunner(FakeRunner):
-        def run(self, command, **kwargs):
-            self.commands.append((list(command), kwargs))
-            operation = list(command)[3:]
-            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
-                return Result("false\n", "", 0)
-            if "profile" in operation and "device" in operation:
-                return Result(f"incusbr-{os.getuid()}\n", "", 0)
-            if "list" in operation and "--format=json" in operation:
-                project = f"user-{os.getuid()}"
-                return Result(
-                    json.dumps(
-                        [
-                            {
-                                "name": project,
-                                "used_by": [f"/1.0/profiles/default?project={project}"],
-                            }
-                        ]
-                    ),
-                    "",
-                    0,
-                )
-            if "network" in operation and "show" in operation:
-                return Result("", "not found", 1)
-            return Result("", "", 0)
-
-    runner = SetupRunner()
-    incus = Incus(runner)
-
-    network = incus.setup_project_network()
-
-    assert network == f"incusbr-{os.getuid()}"
-    commands = [command for command, _ in runner.commands]
-    assert [
-        "sudo",
-        "incus",
-        "--force-local",
-        "project",
-        "set",
-        f"user-{os.getuid()}",
-        "features.networks=true",
-    ] in commands
-    assert [
-        "sudo",
-        "incus",
-        "--force-local",
-        "--project",
-        f"user-{os.getuid()}",
-        "network",
-        "create",
-        f"incusbr-{os.getuid()}",
-        "--type=bridge",
-    ] in commands
-
-
-def test_setup_project_network_is_idempotent() -> None:
-    class ReadySetupRunner(FakeRunner):
-        def run(self, command, **kwargs):
-            self.commands.append((list(command), kwargs))
-            operation = list(command)[3:]
-            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
-                return Result("true\n", "", 0)
-            if "profile" in operation and "device" in operation:
-                return Result(f"incusbr-{os.getuid()}\n", "", 0)
-            if "network" in operation and "show" in operation:
-                return Result("name: ready\n", "", 0)
-            return Result("", "", 0)
-
-    runner = ReadySetupRunner()
-
-    assert Incus(runner).setup_project_network() == f"incusbr-{os.getuid()}"
-    assert not any("set" in command or "create" in command for command, _ in runner.commands)
-
-
-def test_setup_project_network_refuses_nonempty_projects() -> None:
-    class OccupiedSetupRunner(FakeRunner):
-        def run(self, command, **kwargs):
-            self.commands.append((list(command), kwargs))
-            operation = list(command)[3:]
-            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
-                return Result("false\n", "", 0)
-            if "profile" in operation and "device" in operation:
-                return Result(f"incusbr-{os.getuid()}\n", "", 0)
-            if "list" in operation and "--format=json" in operation:
-                project = f"user-{os.getuid()}"
-                return Result(
-                    json.dumps(
-                        [
-                            {
-                                "name": project,
-                                "used_by": [
-                                    f"/1.0/profiles/default?project={project}",
-                                    f"/1.0/instances/existing?project={project}",
-                                ],
-                            }
-                        ]
-                    ),
-                    "",
-                    0,
-                )
-            return Result("", "", 0)
-
-    runner = OccupiedSetupRunner()
-    incus = Incus(runner)
-
-    try:
-        incus.setup_project_network()
-    except SandboxshError as exc:
-        assert "contains resources" in str(exc)
-        assert "/instances/existing" in str(exc)
-    else:
-        raise AssertionError("occupied Incus project was migrated")
-
-    assert not any("set" in command for command, _ in runner.commands)
-
-
-def test_setup_project_network_reports_rollback_failure() -> None:
-    class FailedSetupRunner(FakeRunner):
-        def run(self, command, **kwargs):
-            self.commands.append((list(command), kwargs))
-            operation = list(command)[3:]
-            if operation[:3] == ["project", "get", f"user-{os.getuid()}"]:
-                return Result("false\n", "", 0)
-            if "profile" in operation and "device" in operation:
-                return Result(f"incusbr-{os.getuid()}\n", "", 0)
-            if "list" in operation and "--format=json" in operation:
-                project = f"user-{os.getuid()}"
-                return Result(
-                    json.dumps(
-                        [
-                            {
-                                "name": project,
-                                "used_by": [f"/1.0/profiles/default?project={project}"],
-                            }
-                        ]
-                    ),
-                    "",
-                    0,
-                )
-            if "network" in operation and "show" in operation:
-                return Result("", "not found", 1)
-            if "network" in operation and "create" in operation:
-                return Result("", "network creation failed", 1)
-            if operation[-1:] == ["features.networks=false"]:
-                return Result("", "rollback failed", 1)
-            return Result("", "", 0)
-
-    try:
-        Incus(FailedSetupRunner()).setup_project_network()
-    except SandboxshError as exc:
-        assert "network creation failed" in str(exc)
-        assert "rollback failed" in str(exc)
-    else:
-        raise AssertionError("setup failure was suppressed")
-
-
-def test_verify_host_access_requires_project_local_networking() -> None:
+def test_verify_host_access_requires_incus_user_network_project() -> None:
     project = f"user-{os.getuid()}"
     runner = FakeRunner(
         [
             Result(json.dumps([{"name": project}]), "", 0),
             Result("true\n", "", 0),
-            Result("false\n", "", 0),
+            Result("true\n", "", 0),
         ]
     )
 
     try:
         Incus(runner).verify_host_access()
     except SandboxshError as exc:
-        assert "sandboxsh setup" in str(exc)
+        assert "features.networks=false" in str(exc)
     else:
-        raise AssertionError("shared default network project was accepted")
+        raise AssertionError("unsupported project-local networking was accepted")
 
 
-def test_acl_update_explicitly_scopes_restricted_project(
+def test_host_acl_name_is_user_scoped_and_bounded(tmp_path: Path) -> None:
+    acl = Incus(FakeRunner())._host_acl_name(config(tmp_path))
+
+    assert acl.startswith(f"acl-u{os.getuid()}-")
+    assert len(acl) <= 63
+
+
+def test_acl_management_uses_admin_default_network_project(
     tmp_path: Path, monkeypatch
 ) -> None:
-    class RestrictedAclRunner(FakeRunner):
+    class AclRunner(FakeRunner):
         def run(self, command, **kwargs):
             self.commands.append((list(command), kwargs))
             operation = list(command)[4:]
-            if "query" in command and "--project" in command:
-                raise CommandError(list(command), 1, "--project cannot be used with query")
             if operation[:4] == ["profile", "device", "get", "default"]:
-                return Result("sandboxshbr0\n", "", 0)
-            if operation[:3] == ["network", "get", "sandboxshbr0"]:
+                return Result("incusbr-1000\n", "", 0)
+            if operation[:3] == ["network", "get", "incusbr-1000"]:
                 return Result("10.10.10.1/24\n", "", 0)
-            if operation[:4] == ["network", "acl", "list", "--format=json"]:
-                return Result("[]", "", 0)
-            if operation[:3] == ["network", "acl", "edit"]:
-                raise CommandError(
-                    list(command),
-                    1,
-                    'Error: User does not have permission for project "default"',
-                )
             return Result("", "", 0)
 
     monkeypatch.setattr(security, "DEFAULT_ENDPOINTS", ())
-    runner = RestrictedAclRunner()
+    runner = AclRunner()
     incus = Incus(runner)
     project = config(tmp_path)
 
     incus.apply_acl(project)
 
-    query = next(command for command, _ in runner.commands if "query" in command)
-    assert query[-1] == f"/1.0/network-acls/{project.acl_name}?project={incus.project}"
-    assert query[:6] == ["incus", "--force-local", "query", "-X", "PUT", "-d"]
-    assert "--project" not in query
+    acl = incus._host_acl_name(project)
+    commands = [command for command, _ in runner.commands]
+    assert [
+        "sudo",
+        "incus",
+        "--force-local",
+        "--project",
+        "default",
+        "network",
+        "acl",
+        "create",
+        acl,
+    ] in commands
+    query = next(command for command in commands if "query" in command)
+    assert query[:7] == ["sudo", "incus", "--force-local", "query", "-X", "PUT", "-d"]
+    assert query[-1] == f"/1.0/network-acls/{acl}?project=default"
 
 
 def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
@@ -261,16 +113,11 @@ def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
             self.commands.append((list(command), kwargs))
             operation = list(command)[4:]
             if operation[:4] == ["profile", "device", "get", "default"]:
-                return Result("sandboxshbr0\n", "", 0)
-            if operation[:3] == ["network", "get", "sandboxshbr0"]:
+                return Result("incusbr-1000\n", "", 0)
+            if operation[:3] == ["network", "get", "incusbr-1000"]:
                 return Result("10.10.10.1/24\n", "", 0)
-            if operation[:4] == ["network", "acl", "list", "--format=json"]:
-                return Result("[]", "", 0)
-            if operation[:3] == ["network", "acl", "create"]:
-                error = 'Error: The network ACL already exists'
-                if kwargs.get("check", True):
-                    raise CommandError(list(command), 1, error)
-                return Result("", error, 1)
+            if command[:3] == ["sudo", "incus", "--force-local"] and "create" in command:
+                return Result("", "Error: The network ACL already exists", 1)
             return Result("", "", 0)
 
     monkeypatch.setattr(security, "DEFAULT_ENDPOINTS", ())
@@ -282,29 +129,18 @@ def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
     assert any("query" in command for command, _ in runner.commands)
 
 
-def test_delete_acl_explicitly_scopes_restricted_project(tmp_path: Path) -> None:
-    class RestrictedDeleteRunner(FakeRunner):
-        def run(self, command, **kwargs):
-            self.commands.append((list(command), kwargs))
-            operation = list(command)[4:]
-            if operation[:3] == ["network", "acl", "delete"]:
-                return Result(
-                    "",
-                    'Error: User does not have permission for project "default"',
-                    1,
-                )
-            return Result("", "", 0)
-
-    runner = RestrictedDeleteRunner()
+def test_delete_acl_uses_admin_default_network_project(tmp_path: Path) -> None:
+    runner = FakeRunner()
     incus = Incus(runner)
     project = config(tmp_path)
 
     incus.delete_acl(project)
 
-    query = next(command for command, _ in runner.commands if "query" in command)
-    assert query[:5] == ["incus", "--force-local", "query", "-X", "DELETE"]
-    assert query[-1] == f"/1.0/network-acls/{project.acl_name}?project={incus.project}"
-    assert "--project" not in query
+    query = runner.commands[0][0]
+    assert query[:6] == ["sudo", "incus", "--force-local", "query", "-X", "DELETE"]
+    assert query[-1] == (
+        f"/1.0/network-acls/{incus._host_acl_name(project)}?project=default"
+    )
 
 
 def test_delete_acl_is_idempotent_without_listing(tmp_path: Path) -> None:
@@ -313,7 +149,8 @@ def test_delete_acl_is_idempotent_without_listing(tmp_path: Path) -> None:
 
     incus.delete_acl(config(tmp_path))
 
-    assert runner.commands[0][0][:5] == [
+    assert runner.commands[0][0][:6] == [
+        "sudo",
         "incus",
         "--force-local",
         "query",
