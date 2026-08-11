@@ -7,6 +7,7 @@ import os
 import shlex
 import time
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 from .config import FirewallEntry, ProjectConfig, Resources
 from .errors import SandboxshError
@@ -199,12 +200,29 @@ class Incus:
         policy = build_acl_policy(config, bridge_gateway=gateway)
         if not self._acl_exists(config.acl_name):
             self.command("network", "acl", "create", config.acl_name)
-        self.command(
-            "network",
-            "acl",
-            "edit",
-            config.acl_name,
-            input_text=json.dumps(policy.document),
+        # `incus network acl edit` can lose the selected project when it sends
+        # its update, causing restricted users to be checked against `default`.
+        # Scope the API request explicitly so the update stays in the per-user
+        # project selected by the restricted incus-user socket.
+        endpoint = (
+            f"/1.0/network-acls/{quote(config.acl_name, safe='')}?"
+            + urlencode({"project": self.project})
+        )
+        # Incus rejects the global --project option for raw queries, so this
+        # intentionally bypasses command() while preserving the forced local
+        # socket, isolated client configuration, and explicit project in the URL.
+        self.runner.run(
+            [
+                "incus",
+                "--force-local",
+                "query",
+                "-X",
+                "PUT",
+                "-d",
+                json.dumps(policy.document),
+                endpoint,
+            ],
+            env=self.environment,
         )
         return policy
 

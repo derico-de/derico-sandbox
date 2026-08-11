@@ -2,8 +2,9 @@ import json
 import os
 from pathlib import Path
 
+from sandboxsh import security
 from sandboxsh.config import load_config
-from sandboxsh.errors import SandboxshError
+from sandboxsh.errors import CommandError, SandboxshError
 from sandboxsh.incus import Incus
 from sandboxsh.process import Result
 
@@ -39,6 +40,42 @@ def test_every_incus_command_forces_local_restricted_project() -> None:
         f"user-{os.getuid()}",
     ]
     assert runner.commands[0][1]["env"]["INCUS_CONF"].endswith("/sandboxsh/incus-client")
+
+
+def test_acl_update_explicitly_scopes_restricted_project(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class RestrictedAclRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            operation = list(command)[4:]
+            if "query" in command and "--project" in command:
+                raise CommandError(list(command), 1, "--project cannot be used with query")
+            if operation[:4] == ["profile", "device", "get", "default"]:
+                return Result("sandboxshbr0\n", "", 0)
+            if operation[:3] == ["network", "get", "sandboxshbr0"]:
+                return Result("10.10.10.1/24\n", "", 0)
+            if operation[:4] == ["network", "acl", "list", "--format=json"]:
+                return Result("[]", "", 0)
+            if operation[:3] == ["network", "acl", "edit"]:
+                raise CommandError(
+                    list(command),
+                    1,
+                    'Error: User does not have permission for project "default"',
+                )
+            return Result("", "", 0)
+
+    monkeypatch.setattr(security, "DEFAULT_ENDPOINTS", ())
+    runner = RestrictedAclRunner()
+    incus = Incus(runner)
+    project = config(tmp_path)
+
+    incus.apply_acl(project)
+
+    query = next(command for command, _ in runner.commands if "query" in command)
+    assert query[-1] == f"/1.0/network-acls/{project.acl_name}?project={incus.project}"
+    assert query[:6] == ["incus", "--force-local", "query", "-X", "PUT", "-d"]
+    assert "--project" not in query
 
 
 def test_guest_ip_uses_eth0_not_docker0(tmp_path: Path) -> None:

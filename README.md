@@ -51,6 +51,13 @@ Alternatively, clone the repository and run `./install.sh`. Pass `--no-deps` to
 the streamed installer with `bash -s -- --no-deps`. The installer uses the local
 checkout when available and otherwise installs the Python package from GitHub.
 Set `SANDBOXSH_INSTALL_REF` to pin that package install to a tag or commit.
+Update an existing pipx installation later with:
+
+```bash
+sandboxsh update
+```
+
+Use `sandboxsh update --ref <tag-or-commit>` to install a specific revision.
 
 The installer never adds you to `incus-admin`. A fresh Incus daemon is minimally
 initialized, then `incus-user` creates the restricted `user-<uid>` project and a

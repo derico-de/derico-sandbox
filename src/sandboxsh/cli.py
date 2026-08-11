@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from functools import wraps
 from pathlib import Path
@@ -62,6 +63,29 @@ def cli(ctx: click.Context, config_path: Path | None) -> None:
             _up(ctx.obj, enter_shell=True)
         except SandboxshError as exc:
             raise click.ClickException(str(exc)) from exc
+
+
+@cli.command("update")
+@click.option("--ref", help="Git tag, branch, or commit to install (defaults to main).")
+@click.pass_obj
+@handled
+def update_command(context: Context, ref: str | None) -> None:
+    """Update sandboxsh directly from its GitHub repository."""
+    if shutil.which("pipx") is None:
+        raise SandboxshError("pipx is required to update sandboxsh")
+    repository = os.environ.get(
+        "SANDBOXSH_REPOSITORY_URL",
+        "https://github.com/derico-de/derico-sandbox.git",
+    )
+    install_ref = ref or os.environ.get("SANDBOXSH_INSTALL_REF", "main")
+    source_override = os.environ.get("SANDBOXSH_INSTALL_SOURCE")
+    if source_override and ref is None:
+        source = source_override
+    else:
+        source = f"git+{repository}@{install_ref}"
+    click.echo(f"Updating sandboxsh from {source}...")
+    context.runner.run(["pipx", "install", "--force", source], capture=False)
+    click.echo(f"Updated sandboxsh from {source}.")
 
 
 @cli.command("init")
