@@ -40,7 +40,10 @@ See [SECURITY.md](SECURITY.md) for the threat model and residual risks.
 
 ## Install
 
-Host requirements: Linux, KVM, systemd, current Incus, Python 3.11+, `pipx`, and `sudo`.
+Host requirements: Linux, KVM, systemd, current Incus, Python 3.11+, `pipx`,
+`sudo`, and `kmod`. The installer loads `br_netfilter` immediately and persists it
+through `/etc/modules-load.d/sandboxsh.conf` because Incus NIC filtering requires
+bridge netfilter support.
 On a Debian/Ubuntu-style host, run the installer directly from GitHub:
 
 ```bash

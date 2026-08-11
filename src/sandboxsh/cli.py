@@ -416,6 +416,11 @@ def doctor_command(context: Context) -> None:
     else:
         click.echo("FAIL /dev/kvm is unavailable")
         failures.append("kvm")
+    if Path("/sys/module/br_netfilter").exists():
+        click.echo("PASS br_netfilter kernel module is loaded")
+    else:
+        click.echo("FAIL br_netfilter kernel module is not loaded")
+        failures.append("br_netfilter")
     try:
         project = context.incus.verify_host_access()
         click.echo(f"PASS restricted Incus user project: {project}")

@@ -50,15 +50,19 @@ if [ "$INSTALL_DEPS" = 1 ]; then
     command -v apt-get >/dev/null || fail "automatic dependency install currently supports apt hosts"
     say "Installing host dependencies"
     sudo apt-get update
-    if ! sudo apt-get install -y incus qemu-system-x86 ovmf pipx git; then
+    if ! sudo apt-get install -y incus qemu-system-x86 ovmf pipx git kmod; then
         fail "Incus packages were unavailable. Install current Incus from https://linuxcontainers.org/incus/docs/main/installing/ and rerun with --no-deps"
     fi
 fi
 
-for command in incus pipx git; do
+for command in incus pipx git modprobe; do
     command -v "$command" >/dev/null || fail "missing dependency: $command"
 done
 [ -e /dev/kvm ] || fail "/dev/kvm is missing; enable CPU virtualization/KVM"
+
+say "Loading bridge netfilter support"
+sudo modprobe br_netfilter
+printf 'br_netfilter\n' | sudo tee /etc/modules-load.d/sandboxsh.conf >/dev/null
 
 say "Enabling Incus services"
 sudo systemctl enable --now incus.socket incus-user.socket

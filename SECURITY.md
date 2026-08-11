@@ -97,8 +97,9 @@ VM NIC:
 - only declared development TCP ports accept inbound host traffic;
 - ACL defaults and denied traffic logging are requested on the NIC.
 
-The managed Incus bridge supplies baseline DHCP/DNS before ACL rules. The ACL is
-refreshed explicitly after address rotation. Existing persistent guests are
+The managed Incus bridge supplies baseline DHCP/DNS before ACL rules. Host bridge
+filtering depends on the installer-loaded `br_netfilter` kernel module, which
+`sandboxsh doctor` verifies. The ACL is refreshed explicitly after address rotation. Existing persistent guests are
 updated while stopped and only then started, preventing stale startup authority.
 The disposable golden-image builder receives the same host-enforced policy before
 its first boot.

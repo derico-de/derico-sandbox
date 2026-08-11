@@ -32,6 +32,26 @@ def test_help_exposes_expected_lifecycle() -> None:
         assert command in result.output
 
 
+def test_doctor_requires_bridge_netfilter(monkeypatch) -> None:
+    original_exists = Path.exists
+
+    def exists(path: Path) -> bool:
+        if path == Path("/dev/kvm"):
+            return True
+        if path == Path("/sys/module/br_netfilter"):
+            return False
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "exists", exists)
+    monkeypatch.setattr("sandboxsh.cli.shutil.which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(Incus, "verify_host_access", lambda self: self.project)
+
+    result = CliRunner().invoke(cli, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "FAIL br_netfilter kernel module is not loaded" in result.output
+
+
 @pytest.mark.parametrize(
     ("arguments", "source_override", "expected_source"),
     (
