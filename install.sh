@@ -2,12 +2,31 @@
 # Install sandboxsh and prepare Incus' restricted per-user service.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPOSITORY_URL="${SANDBOXSH_REPOSITORY_URL:-https://github.com/derico-de/derico-sandbox.git}"
+INSTALL_REF="${SANDBOXSH_INSTALL_REF:-main}"
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 INSTALL_DEPS=1
+
+# Prefer the checkout when this script is run from one. When it is streamed to
+# bash (or downloaded by itself), let pipx clone and build the package directly
+# from GitHub instead.
+if [ -n "$SCRIPT_PATH" ] && [ -f "$SCRIPT_PATH" ]; then
+    ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+else
+    ROOT=""
+fi
+if [ -n "${SANDBOXSH_INSTALL_SOURCE:-}" ]; then
+    INSTALL_SOURCE="$SANDBOXSH_INSTALL_SOURCE"
+elif [ -n "$ROOT" ] && [ -f "$ROOT/pyproject.toml" ] && [ -d "$ROOT/src/sandboxsh" ]; then
+    INSTALL_SOURCE="$ROOT"
+else
+    INSTALL_SOURCE="git+$REPOSITORY_URL@$INSTALL_REF"
+fi
 
 usage() {
     cat <<'EOF'
 Usage: ./install.sh [--no-deps]
+       curl -fsSL https://raw.githubusercontent.com/derico-de/derico-sandbox/main/install.sh | bash
 
 Installs the Python CLI with pipx and prepares Incus. The user is added only to
 `incus`, which exposes a restricted per-user project. It is deliberately never
@@ -66,8 +85,8 @@ else
     NEED_LOGIN=0
 fi
 
-say "Installing sandboxsh with pipx"
-pipx install --force "$ROOT"
+say "Installing sandboxsh with pipx from $INSTALL_SOURCE"
+pipx install --force "$INSTALL_SOURCE"
 SANDBOXSH_BIN="${PIPX_BIN_DIR:-$HOME/.local/bin}/sandboxsh"
 [ -x "$SANDBOXSH_BIN" ] || fail "pipx installed sandboxsh but $SANDBOXSH_BIN is missing"
 

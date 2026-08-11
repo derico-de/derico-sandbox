@@ -38,14 +38,19 @@ See [SECURITY.md](SECURITY.md) for the threat model and residual risks.
 ## Install
 
 Host requirements: Linux, KVM, systemd, current Incus, Python 3.11+, and `pipx`.
-On a Debian/Ubuntu-style host:
+On a Debian/Ubuntu-style host, run the installer directly from GitHub:
 
 ```bash
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/derico-de/derico-sandbox/main/install.sh | bash
 # Log out/in if it added you to the `incus` group.
 sandboxsh doctor
 sandboxsh image build       # one reusable image; takes several minutes
 ```
+
+Alternatively, clone the repository and run `./install.sh`. Pass `--no-deps` to
+the streamed installer with `bash -s -- --no-deps`. The installer uses the local
+checkout when available and otherwise installs the Python package from GitHub.
+Set `SANDBOXSH_INSTALL_REF` to pin that package install to a tag or commit.
 
 The installer never adds you to `incus-admin`. A fresh Incus daemon is minimally
 initialized, then `incus-user` creates the restricted `user-<uid>` project and a
