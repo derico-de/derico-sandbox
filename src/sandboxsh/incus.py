@@ -30,6 +30,10 @@ ACL_PROJECT_FIX_FEATURE = (6, 22, 0)
 PIN_BEGIN = "# BEGIN sandboxsh allowlist"
 PIN_END = "# END sandboxsh allowlist"
 
+# Interfaces the guest creates for its own containers. They carry a global IPv4
+# that means nothing to the host, so they must never be taken for the VM address.
+GUEST_LOCAL_INTERFACES = ("docker", "br-", "veth", "virbr", "cni", "flannel")
+
 
 def parse_server_version(value: str) -> tuple[int, int, int] | None:
     parts = value.strip().split(".")[:3]
@@ -629,17 +633,46 @@ class Incus:
                 raise SandboxshError(f"Incus did not delete {config.instance_name}")
         self.delete_acl(config)
 
+    @staticmethod
+    def _global_ipv4(interface: dict | None) -> str | None:
+        for address in (interface or {}).get("addresses", []):
+            if address.get("family") == "inet" and address.get("scope") == "global":
+                return address.get("address")
+        return None
+
     def guest_ip(self, config: ProjectConfig) -> str | None:
+        """Find the address the VM holds on the Incus bridge.
+
+        `eth0` is the Incus *device* name; the agent reports the guest's own
+        interface names, which on the Debian cloud image is `enp5s0`. Picking by
+        name is not enough either: the guest runs Docker, so `docker0` and every
+        compose `br-*` bridge also carry a global IPv4 that the host cannot
+        reach. Match the NIC's MAC instead, which names exactly one interface.
+        """
         record = self._instance_record(config.instance_name)
         if record is None:
             return None
-        try:
-            interface = record["state"]["network"]["eth0"]
-        except (KeyError, TypeError):
+        interfaces = (record.get("state") or {}).get("network")
+        if not isinstance(interfaces, dict):
             return None
-        for address in interface.get("addresses", []):
-            if address.get("family") == "inet" and address.get("scope") == "global":
-                return address.get("address")
+
+        hwaddr = self.command(
+            "config", "get", config.instance_name, "volatile.eth0.hwaddr", check=False
+        )
+        wanted = hwaddr.stdout.strip().lower()
+        if wanted:
+            for interface in interfaces.values():
+                if str((interface or {}).get("hwaddr", "")).lower() == wanted:
+                    return self._global_ipv4(interface)
+
+        # No recorded MAC: fall back to the first interface that is neither
+        # loopback nor one of the guest's own container bridges.
+        for name in sorted(interfaces):
+            if name == "lo" or name.startswith(GUEST_LOCAL_INTERFACES):
+                continue
+            address = self._global_ipv4(interfaces[name])
+            if address:
+                return address
         return None
 
     def shell_argv(self, config: ProjectConfig) -> list[str]:

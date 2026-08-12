@@ -416,3 +416,60 @@ def test_bridge_gateway_stays_none_when_the_bridge_has_no_address(tmp_path: Path
     runner = FakeRunner([Result("none\n", "", 0), Result("", "", 1)])
 
     assert Incus(runner).bridge_gateway("incusbr-1000") is None
+
+
+def guest_record(instance: str, interfaces: dict) -> Result:
+    return Result(
+        json.dumps([{"name": instance, "status": "Running", "state": {"network": interfaces}}]),
+        "",
+        0,
+    )
+
+
+DOCKER_BRIDGES = {
+    "lo": {
+        "hwaddr": "",
+        "addresses": [{"family": "inet", "scope": "local", "address": "127.0.0.1"}],
+    },
+    "docker0": {
+        "hwaddr": "02:42:9a:11:22:33",
+        "addresses": [{"family": "inet", "scope": "global", "address": "172.17.0.1"}],
+    },
+    "br-1a2b3c": {
+        "hwaddr": "02:42:aa:bb:cc:dd",
+        "addresses": [{"family": "inet", "scope": "global", "address": "172.18.0.1"}],
+    },
+    "enp5s0": {
+        "hwaddr": "10:66:6a:de:5c:2d",
+        "addresses": [{"family": "inet", "scope": "global", "address": "10.138.35.7"}],
+    },
+}
+
+
+def test_guest_ip_matches_the_nic_mac_not_the_device_name(tmp_path: Path) -> None:
+    # The agent reports the guest's own interface names, so there is no `eth0`.
+    project = config(tmp_path)
+    runner = FakeRunner(
+        [guest_record(project.instance_name, DOCKER_BRIDGES), Result("10:66:6A:DE:5C:2D\n", "", 0)]
+    )
+
+    assert Incus(runner).guest_ip(project) == "10.138.35.7"
+
+
+def test_guest_ip_never_returns_a_docker_bridge(tmp_path: Path) -> None:
+    # Without a recorded MAC, name order would otherwise pick docker0, whose
+    # address the host cannot reach.
+    project = config(tmp_path)
+    runner = FakeRunner([guest_record(project.instance_name, DOCKER_BRIDGES), Result("", "", 1)])
+
+    assert Incus(runner).guest_ip(project) == "10.138.35.7"
+
+
+def test_guest_ip_is_none_before_the_bridge_address_is_leased(tmp_path: Path) -> None:
+    interfaces = {"enp5s0": {"hwaddr": "10:66:6a:de:5c:2d", "addresses": []}}
+    project = config(tmp_path)
+    runner = FakeRunner(
+        [guest_record(project.instance_name, interfaces), Result("10:66:6a:de:5c:2d\n", "", 0)]
+    )
+
+    assert Incus(runner).guest_ip(project) is None
