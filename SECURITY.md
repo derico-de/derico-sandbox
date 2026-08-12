@@ -104,6 +104,11 @@ VM NIC:
 - only declared development TCP ports accept inbound host traffic;
 - ACL defaults and denied traffic logging are requested on the NIC.
 
+The addresses in the ACL are also pinned into the guest's `/etc/hosts` so guest
+resolution cannot select a CDN address the host never allowlisted. Guest root can
+edit that file, so it is treated as availability only and grants no authority: it
+can name nothing the ACL does not already permit.
+
 The managed Incus bridge supplies baseline DHCP/DNS before ACL rules. Host bridge
 filtering depends on the installer-loaded `br_netfilter` kernel module, which
 `sandboxsh doctor` verifies. The ACL is refreshed explicitly after address rotation. Existing persistent guests are

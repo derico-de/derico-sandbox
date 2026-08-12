@@ -101,6 +101,13 @@ DNS names are not placed directly in ACLs. The host resolves them at creation or
 and port set. This is intentionally a snapshot: it is auditable and cannot be
 bypassed by unsetting a proxy variable, but CDNs can rotate away from it.
 
+Because the snapshot is the host's view, the guest must share it. Applying the ACL
+also writes those addresses into a marked block in the guest's `/etc/hosts`, so
+guest-side resolution cannot pick a rotating CDN edge outside the ACL and stall on
+a dropped connect. The block is rewritten on every apply and stripped from the
+golden image before publication. Guest root can edit `/etc/hosts`, so this is an
+availability measure; the NIC ACL is unchanged as the enforcement boundary.
+
 The VM receives a direct NIC ACL rather than only a network-level ACL. Incus
 notes that direct NIC ACLs on a bridge can control intra-bridge traffic, whereas
 network-level bridge ACLs primarily operate at the bridge/host boundary.

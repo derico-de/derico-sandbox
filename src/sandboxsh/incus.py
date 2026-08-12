@@ -27,6 +27,9 @@ CREDS_VOLUME = "sandboxsh-agent-creds"
 ACL_PROJECT_FIX_LTS = (6, 0, 6)
 ACL_PROJECT_FIX_FEATURE = (6, 22, 0)
 
+PIN_BEGIN = "# BEGIN sandboxsh allowlist"
+PIN_END = "# END sandboxsh allowlist"
+
 
 def parse_server_version(value: str) -> tuple[int, int, int] | None:
     parts = value.strip().split(".")[:3]
@@ -321,6 +324,42 @@ class Incus:
         self._admin_acl_query("PUT", acl, data=policy.document)
         return policy
 
+    def pin_allowlist(self, policy: AclPolicy, *, instance: str) -> None:
+        """Point the guest at the exact addresses the host wrote into the ACL.
+
+        The ACL is a snapshot of what the *host* resolved. A guest that resolves
+        the same name itself gets a different subset from any rotating CDN, dials
+        an address the ACL never allowed, and hangs until its connect timeout.
+        This is availability, not enforcement: guest root can edit /etc/hosts, but
+        the ACL still decides what may leave the NIC.
+        """
+        entries = []
+        for host, addresses in sorted(policy.resolutions.items()):
+            # Literal IP/CIDR endpoints are already what the guest dials.
+            usable = [address for address in addresses if "/" not in address and address != host]
+            # A name found in /etc/hosts answers both families from that entry, so
+            # keeping IPv4 also stops the guest from stalling on CDN v6 edges when
+            # the bridge has no working IPv6 egress.
+            preferred = [address for address in usable if ":" not in address] or usable
+            entries.extend(f"{address} {host}" for address in preferred)
+        document = "\n".join([PIN_BEGIN, *entries, PIN_END]) + "\n"
+        script = (
+            f"set -e; sed -i '/{PIN_BEGIN}/,/{PIN_END}/d' /etc/hosts; "
+            'printf \'%s\' "$1" >> /etc/hosts'
+        )
+        self.command("exec", instance, "--", "bash", "-c", script, "sandboxsh", document)
+
+    def unpin_allowlist(self, instance: str) -> None:
+        self.command(
+            "exec",
+            instance,
+            "--",
+            "sed",
+            "-i",
+            f"/{PIN_BEGIN}/,/{PIN_END}/d",
+            "/etc/hosts",
+        )
+
     def attach_acl(self, config: ProjectConfig, *, instance: str | None = None) -> None:
         target = instance or config.instance_name
         settings = {
@@ -423,6 +462,8 @@ class Incus:
                 "--wait",
                 check=False,
             )
+            # After cloud-init, which rewrites /etc/hosts on first boot.
+            self.pin_allowlist(policy, instance=config.instance_name)
             if config.agent_credentials:
                 self.wait_for_mount(config.instance_name, "/agent-creds")
             self.command(
@@ -622,6 +663,7 @@ class Incus:
             self.command("start", builder)
             self.wait_for_agent(builder, timeout=600)
             self.command("exec", builder, "--", "cloud-init", "status", "--wait", check=False)
+            self.pin_allowlist(policy, instance=builder)
             guest_dir = Path(__file__).parent / "guest"
             if not guest_dir.is_dir():
                 # Editable source install; wheel installs use the packaged path.
@@ -644,6 +686,8 @@ class Incus:
                 str(os.getgid()),
                 capture=False,
             )
+            # The pins belong to this build, not to every VM cloned from the image.
+            self.unpin_allowlist(builder)
             self.command("exec", builder, "--", "cloud-init", "clean", "--logs", "--machine-id")
             self.command("stop", builder, "--force")
             self.command("publish", builder, "--alias", image, "--reuse")

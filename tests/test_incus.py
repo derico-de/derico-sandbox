@@ -5,8 +5,15 @@ from pathlib import Path
 from sandboxsh import security
 from sandboxsh.config import load_config
 from sandboxsh.errors import SandboxshError
-from sandboxsh.incus import Incus, acl_project_lookup_is_broken, parse_server_version
+from sandboxsh.incus import (
+    PIN_BEGIN,
+    PIN_END,
+    Incus,
+    acl_project_lookup_is_broken,
+    parse_server_version,
+)
 from sandboxsh.process import Result
+from sandboxsh.security import AclPolicy
 
 
 class FakeRunner:
@@ -175,6 +182,61 @@ def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
     incus.apply_acl(config(tmp_path))
 
     assert any("query" in command for command, _ in runner.commands)
+
+
+def test_pin_allowlist_writes_the_host_resolved_addresses() -> None:
+    runner = FakeRunner()
+    policy = AclPolicy(
+        document={},
+        resolutions={
+            "download.docker.com": ("18.0.0.1", "18.0.0.2", "2600::1"),
+            "10.8.0.0/24": ("10.8.0.0/24",),
+        },
+        unresolved_defaults=(),
+    )
+
+    Incus(runner).pin_allowlist(policy, instance="ss-demo")
+
+    command = runner.commands[0][0]
+    assert command[4:7] == ["exec", "ss-demo", "--"]
+    # IPv6 edges are dropped while a usable IPv4 address exists: a name answered
+    # from /etc/hosts never falls back to DNS for the other family.
+    assert command[-1].splitlines() == [
+        PIN_BEGIN,
+        "18.0.0.1 download.docker.com",
+        "18.0.0.2 download.docker.com",
+        PIN_END,
+    ]
+    # A stale block must not accumulate across refreshes.
+    assert f"sed -i '/{PIN_BEGIN}/,/{PIN_END}/d' /etc/hosts" in command[7 + 2]
+
+
+def test_pin_allowlist_keeps_ipv6_only_endpoints() -> None:
+    runner = FakeRunner()
+    policy = AclPolicy(
+        document={}, resolutions={"v6.example": ("2600::1",)}, unresolved_defaults=()
+    )
+
+    Incus(runner).pin_allowlist(policy, instance="ss-demo")
+
+    assert "2600::1 v6.example" in runner.commands[0][0][-1]
+
+
+def test_unpin_allowlist_removes_only_the_managed_block() -> None:
+    runner = FakeRunner()
+
+    Incus(runner).unpin_allowlist("ss-demo")
+
+    command = runner.commands[0][0]
+    assert command[4:] == [
+        "exec",
+        "ss-demo",
+        "--",
+        "sed",
+        "-i",
+        f"/{PIN_BEGIN}/,/{PIN_END}/d",
+        "/etc/hosts",
+    ]
 
 
 def test_delete_acl_uses_admin_default_network_project(tmp_path: Path) -> None:

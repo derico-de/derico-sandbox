@@ -167,7 +167,12 @@ sandboxsh refresh-firewall
 ```
 
 Hostnames are resolved on the **host** and their current IPv4/IPv6 addresses are
-written into the ACL. Run `refresh-firewall` after CDN rotation. The golden-image
+written into the ACL. The same addresses are pinned in the guest's `/etc/hosts`
+whenever the ACL is applied, so a rotating CDN cannot hand the guest an address
+the host never approved — without it, a name such as `download.docker.com` returns
+different CloudFront edges to host and guest and the guest hangs until its connect
+timeout. The pin is for availability; the ACL remains the enforcement point.
+Run `refresh-firewall` after CDN rotation. The golden-image
 builder is protected by the same ACL; add an exceptional build-only hostname with
 `SANDBOXSH_BUILD_ALLOW=host1,host2 sandboxsh image build`. Wildcards are
 not accepted. Private/RFC1918 destinations are rejected unless the endpoint sets

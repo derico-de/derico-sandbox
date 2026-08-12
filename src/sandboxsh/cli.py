@@ -156,6 +156,7 @@ def _up(context: Context, *, enter_shell: bool) -> None:
         _report_unresolved_defaults(policy)
         context.incus.attach_acl(config)
         context.incus.start(config)
+        context.incus.pin_allowlist(policy, instance=config.instance_name)
         click.echo(f"Attached to persistent VM {config.instance_name}.", err=True)
     else:
         click.echo(f"Creating persistent VM {config.instance_name}...", err=True)
@@ -297,6 +298,9 @@ def refresh_firewall_command(context: Context) -> None:
     policy = context.incus.apply_acl(config)
     _report_unresolved_defaults(policy)
     context.incus.attach_acl(config)
+    # A running guest keeps dialing the previous snapshot until it is re-pinned.
+    if context.incus.instance_status(config.instance_name) == "Running":
+        context.incus.pin_allowlist(policy, instance=config.instance_name)
     for host, addresses in sorted(policy.resolutions.items()):
         click.echo(f"{host}: {', '.join(addresses)}")
     click.echo("Host-enforced network ACL refreshed.")
