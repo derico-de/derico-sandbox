@@ -116,6 +116,15 @@ Declared development ports produce ingress allow rules sourced from the managed
 bridge gateway. The host reaches the guest directly, so multiple VMs can all use
 port 3000 without host port mappings.
 
+Tailnet publication is layered on top of that rule rather than widening it. A
+socket-activated `systemd-socket-proxyd` listens on the host's tailnet address
+and dials the guest across the bridge, so the packets arriving at the NIC are
+still sourced from the bridge gateway and match the same ingress rule. The host
+port is what becomes scarce, so publication is recorded in a per-host registry
+that assigns each published port to one project. Host-originated traffic also
+never crosses the IPv4 `FORWARD` hook, so publishing is unaffected by the
+container-runtime lockdown that the bridge rule works around.
+
 ## Credential storage
 
 The shared filesystem volume is managed by the Incus storage pool, not a host

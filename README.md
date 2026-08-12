@@ -29,6 +29,11 @@ kernel. Neither the host Docker socket nor the Incus control socket is exposed.
   on the restricted user socket.
 - Only declared development ports accept host-to-VM traffic. They are reached at
   the VM's private address, avoiding host-port collisions between projects.
+- A declared port can additionally be published on the host's tailnet address, so
+  it is reachable as `<tailnet-node>:<port>` from any node in the tailnet. Because
+  that turns a host-local port into a tailnet-wide one, and the request comes from
+  guest-writable configuration, each mapping is published only after the trusted
+  host approves it.
 - CPU, memory, and root-disk limits are enforced by Incus.
 - Claude, pi, and Vibe state is placed on one Incus-managed filesystem volume and
   shared across project VMs. This provides login-once behavior, but it deliberately
@@ -125,7 +130,12 @@ vibe
     ".",
     {"path": "../shared-reference", "ro": true, "target": "/reference"}
   ],
-  "ports": [3000, 8080],
+  "ports": [
+    3000,
+    {"guest": 8080, "host": 18080},
+    {"guest": 5432, "tailnet": false}
+  ],
+  "tailscale": {"enabled": true},
   "firewall": {
     "enabled": true,
     "allow": [
@@ -229,6 +239,68 @@ To open a development server, declare its guest port and bind the service to
 sandboxsh refresh-firewall  # applies firewall and port changes live
 sandboxsh url 3000
 ```
+
+### Reaching a sandbox from your tailnet
+
+A declared port is reachable at the VM's private address from the host that owns
+the VM. To reach it from anywhere in your tailnet, sandboxsh can publish it on
+this host's tailnet address, so a service in the VM answers on
+`<tailnet-node>:<port>`.
+
+Install the host helper once (it writes the systemd units that do the
+forwarding, so it needs root):
+
+```bash
+./install.sh --publish-helper --no-deps
+```
+
+Then declare the ports and start the VM. The first `up` asks the host to approve
+each mapping, because `.sandboxsh.json` is guest-writable and publishing widens a
+host-local port to the whole tailnet:
+
+```json
+{"ports": [8080, 8085]}
+```
+
+```bash
+sandboxsh up --no-shell
+# Publish project 'travelstream' guest port 8080 to the whole tailnet on host port 8080? [y/N]
+sandboxsh status     # lists every tailnet URL
+sandboxsh url 8080   # http://powerman:8080
+```
+
+Publishing is deliberately never fatal. An unapproved port, a tailnet that is
+down, or a missing helper is reported and skipped, and the VM still starts with
+its port reachable at the VM address. `sandboxsh url <port> --vm` always prints
+that address.
+
+A tailnet node has a single port 8080, so two projects cannot both publish it.
+The second one to start is refused by name rather than silently shadowing the
+first; give it a different host port:
+
+```json
+{"ports": [{"guest": 8080, "host": 18080}]}
+```
+
+Use `{"guest": 5432, "tailnet": false}` for a port that should stay reachable
+only at the VM address, or `"tailscale": {"enabled": false}` for a whole project.
+Set `"tailscale": {"address": "..."}` to bind a specific host address instead of
+the one `tailscale ip -4` reports.
+
+Withdraw a project's listeners and free its host ports with `sandboxsh
+unpublish`; `sandboxsh down` withdraws them too, but keeps the ports reserved for
+that project. Revoke the approvals themselves with `sandboxsh approve --revoke`.
+
+Two things are worth knowing about how this is wired. The listener runs on the
+host and dials the VM over the Incus bridge, so the guest sees the bridge gateway
+as the source address — the ACL's existing ingress rule already allows exactly
+that, and publishing therefore changes no network policy inside the sandbox. The
+same property means the `DOCKER-USER` forwarding rule above is not involved:
+host-originated traffic never crosses the `FORWARD` hook.
+
+Your tailnet policy still applies on top. If the tailnet ACL or `tailscale up
+--shields-up` blocks inbound connections to this node, the published port is
+listening but unreachable.
 
 ### Shared and project-local credentials
 

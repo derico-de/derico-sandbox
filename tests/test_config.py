@@ -125,9 +125,88 @@ def test_firewall_and_ports_are_validated(tmp_path: Path) -> None:
 
     config = load_config(path)
 
-    assert config.ports == (3000, 8080)
+    assert config.guest_ports == (3000, 8080)
     assert config.firewall_allow[1].ports == (443, 5000)
 
     path = write_config(tmp_path, {"name": "demo", "dirs": ["."], "ports": [70000]})
     with pytest.raises(ConfigError, match="between 1 and 65535"):
+        load_config(path)
+
+
+def test_ports_default_to_the_same_host_port_on_the_tailnet(tmp_path: Path) -> None:
+    path = write_config(tmp_path, {"name": "demo", "dirs": ["."], "ports": [8080]})
+
+    config = load_config(path)
+
+    assert config.ports[0].guest == 8080
+    assert config.ports[0].host == 8080
+    assert config.publishable == config.ports
+
+
+def test_a_port_can_be_remapped_or_kept_off_the_tailnet(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {
+            "name": "demo",
+            "dirs": ["."],
+            "ports": [
+                {"guest": 8080, "host": 18080},
+                {"guest": 5432, "tailnet": False},
+            ],
+        },
+    )
+
+    config = load_config(path)
+
+    assert config.guest_ports == (5432, 8080)
+    published = config.publishable
+    assert [(mapping.guest, mapping.host) for mapping in published] == [(8080, 18080)]
+
+
+def test_disabling_tailscale_keeps_declared_ports_vm_local(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {"name": "demo", "dirs": ["."], "ports": [8080], "tailscale": {"enabled": False}},
+    )
+
+    config = load_config(path)
+
+    # The ACL still opens the port for the host that owns the VM.
+    assert config.guest_ports == (8080,)
+    assert config.publishable == ()
+
+
+def test_conflicting_port_declarations_are_rejected(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {"name": "demo", "dirs": ["."], "ports": [8080, {"guest": 8080, "host": 9090}]},
+    )
+    with pytest.raises(ConfigError, match="duplicate guest port"):
+        load_config(path)
+
+    path = write_config(
+        tmp_path,
+        {
+            "name": "demo",
+            "dirs": ["."],
+            "ports": [{"guest": 8080, "host": 80}, {"guest": 81, "host": 80}],
+        },
+    )
+    with pytest.raises(ConfigError, match="duplicate published host port"):
+        load_config(path)
+
+    path = write_config(
+        tmp_path,
+        {"name": "demo", "dirs": ["."], "ports": [{"guest": 8080, "listen": "0.0.0.0"}]},
+    )
+    with pytest.raises(ConfigError, match="unknown ports\\[0\\] field"):
+        load_config(path)
+
+
+def test_tailscale_address_must_be_an_ip(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {"name": "demo", "dirs": ["."], "tailscale": {"address": "powerman"}},
+    )
+    with pytest.raises(ConfigError, match="must be an IP address"):
         load_config(path)

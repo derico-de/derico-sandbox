@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from functools import wraps
 from pathlib import Path
 
@@ -13,10 +14,14 @@ from .config import CONFIG_NAME, ProjectConfig, find_config, load_config, saniti
 from .errors import SandboxshError
 from .incus import CREDS_VOLUME, DEFAULT_POOL, Incus
 from .process import Runner
+from .publish import INSTALL_HELPER_HINT, Endpoint, Publisher
 from .security import (
     AclPolicy,
+    approved_publications,
     build_acl_policy,
+    claim_host_ports,
     ensure_project_approvals,
+    release_host_ports,
     revoke_project_approvals,
 )
 
@@ -37,6 +42,7 @@ class Context:
         self.config_path = config_path
         self.runner = Runner()
         self.incus = Incus(self.runner)
+        self.publisher = Publisher(self.runner)
 
     def config(self) -> ProjectConfig:
         return load_config(self.config_path or find_config())
@@ -105,6 +111,7 @@ def init_command(context: Context, name: str | None, no_up: bool) -> None:
         "workdir": f"/workspaces/{root.name}",
         "dirs": ["."],
         "ports": [],
+        "tailscale": {"enabled": True},
         "firewall": {"enabled": True, "allow": []},
         "resources": {"cpus": 4, "memory": "8GiB", "disk": "40GiB"},
         "agent_credentials": True,
@@ -145,6 +152,73 @@ def _report_unresolved_defaults(policy: AclPolicy) -> None:
         )
 
 
+def _interactive() -> bool:
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _publish(context: Context, config: ProjectConfig) -> tuple[Endpoint, ...]:
+    """Bring published tailnet ports in line with the approved configuration."""
+    requested = config.publishable
+    if not requested:
+        context.publisher.clear(config)
+        release_host_ports(config)
+        return ()
+    if not context.publisher.helper_available():
+        click.echo(INSTALL_HELPER_HINT, err=True)
+        return ()
+
+    approved, pending = approved_publications(config, prompt=_interactive())
+    for mapping in pending:
+        click.echo(
+            f"Not published: guest port {mapping.guest} has no host approval for "
+            f"tailnet port {mapping.host}. Run `sandboxsh approve` from an "
+            "interactive host terminal to allow it.",
+            err=True,
+        )
+    if not approved:
+        context.publisher.clear(config)
+        release_host_ports(config)
+        return ()
+
+    claim_host_ports(config, approved)
+    guest_ip = context.incus.guest_ip(config)
+    if not guest_ip:
+        raise SandboxshError("VM has no IPv4 address, so its ports cannot be published")
+    return context.publisher.sync(
+        config,
+        guest_ip=guest_ip,
+        address=context.publisher.address(config),
+        mappings=approved,
+    )
+
+
+def _publish_and_report(context: Context, config: ProjectConfig) -> None:
+    """Publish during a lifecycle command, where a running VM outranks a URL.
+
+    Publishing is a convenience layered on top of the sandbox. A tailnet that is
+    down, an unapproved port, or a host port another project already owns must
+    not leave the caller without the VM they asked for.
+    """
+    try:
+        endpoints = _publish(context, config)
+    except SandboxshError as exc:
+        click.echo(f"Ports were not published: {exc}", err=True)
+        return
+    for endpoint in endpoints:
+        click.echo(f"published: {endpoint.url} -> guest port {endpoint.mapping.guest}", err=True)
+
+
+def _withdraw(context: Context, config: ProjectConfig) -> None:
+    """Drop published listeners without letting that block stop/delete."""
+    try:
+        context.publisher.clear(config)
+    except SandboxshError as exc:
+        click.echo(f"Published ports were not withdrawn: {exc}", err=True)
+
+
 def _up(context: Context, *, enter_shell: bool) -> None:
     config = context.config()
     _verify_and_approve(context, config)
@@ -166,6 +240,8 @@ def _up(context: Context, *, enter_shell: bool) -> None:
             f"Created VM with {len(policy.document['egress'])} host-enforced egress rules.",
             err=True,
         )
+    # After start, because the proxy targets the address the VM just leased.
+    _publish_and_report(context, config)
     if enter_shell:
         context.runner.exec(context.incus.shell_argv(config), env=context.incus.environment)
 
@@ -211,6 +287,9 @@ def down_command(context: Context) -> None:
     """Stop the VM but preserve its disk and project-local credentials."""
     config = context.config()
     context.incus.verify_host_access()
+    # Withdraw the listeners first: a published port whose VM is gone accepts
+    # connections and then hangs. The host port stays reserved for this project.
+    _withdraw(context, config)
     context.incus.stop(config)
     click.echo(f"Stopped {config.instance_name}; its disk is preserved.")
 
@@ -227,6 +306,8 @@ def destroy_command(context: Context, yes: bool) -> None:
         f"Delete {config.instance_name} and all VM-local credentials/state?", default=False
     ):
         raise SandboxshError("destroy cancelled")
+    _withdraw(context, config)
+    release_host_ports(config)
     context.incus.destroy(config)
     click.echo(f"Deleted {config.instance_name}. Shared agent credentials were kept.")
 
@@ -268,24 +349,85 @@ def status_command(context: Context) -> None:
         ip = context.incus.guest_ip(config)
         click.echo(f"address:  {ip or 'not assigned'}")
         if ip:
-            for port in config.ports:
+            for port in config.guest_ports:
                 click.echo(f"url:      http://{ip}:{port}")
+        for line in _publication_status(context, config):
+            click.echo(line)
+
+
+def _publication_status(context: Context, config: ProjectConfig) -> list[str]:
+    """Describe tailnet publication without making `status` depend on it."""
+    if not config.publishable:
+        return []
+    if not context.publisher.helper_available():
+        return ["tailnet:  helper not installed (see `sandboxsh doctor`)"]
+    approved, pending = approved_publications(config, prompt=False)
+    lines = []
+    try:
+        address = context.publisher.address(config)
+        hostname = context.publisher.hostname()
+    except SandboxshError as exc:
+        return [f"tailnet:  unavailable ({exc})"]
+    authority = hostname or address
+    for mapping in approved:
+        lines.append(f"tailnet:  http://{authority}:{mapping.host} -> guest {mapping.guest}")
+    for mapping in pending:
+        lines.append(f"tailnet:  guest {mapping.guest} awaiting `sandboxsh approve`")
+    return lines
 
 
 @cli.command("url")
 @click.argument("port", type=click.IntRange(1, 65535))
+@click.option("--vm", is_flag=True, help="Print the VM address even when the port is published.")
 @click.pass_obj
 @handled
-def url_command(context: Context, port: int) -> None:
-    """Print the host-reachable URL for a declared guest port."""
+def url_command(context: Context, port: int, vm: bool) -> None:
+    """Print the reachable URL for a declared guest port."""
     config = context.config()
     context.incus.verify_host_access()
-    if port not in config.ports:
+    if port not in config.guest_ports:
         raise SandboxshError(f"port {port} is not declared in .sandboxsh.json")
+    if not vm and config.publishable and context.publisher.helper_available():
+        approved, _ = approved_publications(config, prompt=False)
+        mapping = next((entry for entry in approved if entry.guest == port), None)
+        if mapping is not None:
+            authority = context.publisher.hostname() or context.publisher.address(config)
+            click.echo(f"http://{authority}:{mapping.host}")
+            return
     address = context.incus.guest_ip(config)
     if not address:
         raise SandboxshError("VM has no IPv4 address")
     click.echo(f"http://{address}:{port}")
+
+
+@cli.command("publish")
+@click.pass_obj
+@handled
+def publish_command(context: Context) -> None:
+    """Publish approved development ports on this host's tailnet address."""
+    config = context.config()
+    context.incus.verify_host_access()
+    if context.incus.instance_status(config.instance_name) != "Running":
+        raise SandboxshError("VM is not running; use `sandboxsh up`")
+    endpoints = _publish(context, config)
+    if not endpoints:
+        click.echo("Nothing is published for this project.")
+        return
+    for endpoint in endpoints:
+        click.echo(f"{endpoint.url} -> guest port {endpoint.mapping.guest}")
+
+
+@cli.command("unpublish")
+@click.pass_obj
+@handled
+def unpublish_command(context: Context) -> None:
+    """Withdraw this project's tailnet listeners and release its host ports."""
+    config = context.config()
+    if not context.publisher.helper_available():
+        raise SandboxshError(INSTALL_HELPER_HINT)
+    context.publisher.clear(config)
+    release_host_ports(config)
+    click.echo(f"Withdrew published ports for {config.instance_name}.")
 
 
 @cli.command("refresh-firewall")
@@ -301,6 +443,8 @@ def refresh_firewall_command(context: Context) -> None:
     # A running guest keeps dialing the previous snapshot until it is re-pinned.
     if context.incus.instance_status(config.instance_name) == "Running":
         context.incus.pin_allowlist(policy, instance=config.instance_name)
+        # Declared ports are refreshed here too, so the listeners follow them.
+        _publish_and_report(context, config)
     for host, addresses in sorted(policy.resolutions.items()):
         click.echo(f"{host}: {', '.join(addresses)}")
     click.echo("Host-enforced network ACL refreshed.")
@@ -332,6 +476,15 @@ def plan_command(context: Context) -> None:
             }
             for mount in config.mounts
         ],
+        "ports": [
+            {
+                "guest": mapping.guest,
+                "host": mapping.host,
+                "tailnet": mapping.tailnet and config.tailscale.enabled,
+            }
+            for mapping in config.ports
+        ],
+        "tailnetPublicationRequiresHostApproval": bool(config.publishable),
         "sharedAgentCredentials": config.agent_credentials,
         "guestLocalOtherCredentials": True,
         "customNetworkAuthorityRequiresHostApproval": bool(config.firewall_allow),
@@ -444,6 +597,21 @@ def doctor_command(context: Context) -> None:
             else:
                 click.echo(f"FAIL {remedy}")
                 failures.append("bridge-forwarding")
+    # Tailnet publishing is optional, so its absence is reported without
+    # failing a host that only ever reaches sandboxes at their VM address.
+    if not context.publisher.helper_available():
+        click.echo(f"WARN {INSTALL_HELPER_HINT}")
+    elif shutil.which("tailscale") is None:
+        click.echo(
+            "WARN the publishing helper is installed but tailscale is not; "
+            'publish only with an explicit "tailscale": {"address": "..."}'
+        )
+    else:
+        status = context.runner.run(["tailscale", "status", "--json"], check=False)
+        if status.returncode:
+            click.echo("WARN tailscale is installed but not connected; run `tailscale up`")
+        else:
+            click.echo("PASS tailnet publishing is available")
     if failures:
         raise SandboxshError(f"doctor found {len(failures)} problem(s)")
     click.echo("Host is ready for sandboxsh.")

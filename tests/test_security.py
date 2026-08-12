@@ -146,3 +146,74 @@ def test_external_authority_requires_host_side_approval(
 
     ledger = json.loads((config_home / "sandboxsh" / "approvals.json").read_text())
     assert str(path.resolve()) in ledger["projects"]
+
+
+def test_publication_needs_host_approval_and_never_blocks_a_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "state"))
+    config = project_config(tmp_path, ports=[8080])
+
+    # A guest edit asking for the tailnet is inert until the host says yes, but
+    # it is returned as pending rather than raised: the VM still has to start.
+    approved, pending = security.approved_publications(config, prompt=False)
+    assert approved == ()
+    assert [mapping.guest for mapping in pending] == [8080]
+
+    monkeypatch.setattr(security.click, "confirm", lambda *args, **kwargs: True)
+    approved, pending = security.approved_publications(config, prompt=True)
+    assert [mapping.guest for mapping in approved] == [8080]
+    assert pending == ()
+
+    # The approval is durable, so later non-interactive runs publish it.
+    approved, pending = security.approved_publications(config, prompt=False)
+    assert [mapping.guest for mapping in approved] == [8080]
+
+
+def test_a_denied_publication_stays_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "state"))
+    config = project_config(tmp_path, ports=[8080])
+    monkeypatch.setattr(security.click, "confirm", lambda *args, **kwargs: False)
+
+    approved, pending = security.approved_publications(config, prompt=True)
+
+    assert approved == ()
+    assert [mapping.guest for mapping in pending] == [8080]
+    approved, _ = security.approved_publications(config, prompt=False)
+    assert approved == ()
+
+
+def test_a_second_project_cannot_take_a_published_host_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "state"))
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first = project_config(first_root, ports=[8080])
+    second = project_config(second_root, ports=[8080])
+
+    security.claim_host_ports(first, first.publishable)
+    with pytest.raises(SandboxshError, match="already published by"):
+        security.claim_host_ports(second, second.publishable)
+
+    # Releasing the owner frees the port for the next project.
+    security.release_host_ports(first)
+    security.claim_host_ports(second, second.publishable)
+
+
+def test_reclaiming_drops_host_ports_a_project_no_longer_declares(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "state"))
+    config = project_config(tmp_path, ports=[8080, 8085])
+    security.claim_host_ports(config, config.publishable)
+
+    narrowed = project_config(tmp_path, ports=[8080])
+    security.claim_host_ports(narrowed, narrowed.publishable)
+
+    registry = json.loads((tmp_path / "state/sandboxsh/published-ports.json").read_text())
+    assert sorted(registry["ports"]) == ["8080"]

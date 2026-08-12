@@ -101,7 +101,8 @@ VM NIC:
 - private destinations require an additional `allow_private=true` declaration;
 - loopback, link-local/metadata, multicast, unspecified, and reserved destinations
   are rejected even when private access is requested;
-- only declared development TCP ports accept inbound host traffic;
+- only declared development TCP ports accept inbound host traffic, and exposing
+  one beyond the host requires separate host approval;
 - ACL defaults and denied traffic logging are requested on the NIC.
 
 The addresses in the ACL are also pinned into the guest's `/etc/hosts` so guest
@@ -115,6 +116,35 @@ Incus bridge in `ip filter` only; ACL enforcement lives in the `bridge incus`
 nftables table and still applies to every packet, so the sandbox keeps its egress
 boundary. `sandboxsh doctor` reports the condition rather than applying it, because
 editing another daemon's firewall chains is the host owner's decision.
+
+### Publishing a port to the tailnet
+
+A declared port is reachable from the host that owns the VM. Publishing makes it
+reachable from every node on the tailnet, which is a strictly wider audience, and
+the request to publish comes from `.sandboxsh.json` — a file the guest can
+rewrite. Publication therefore requires host-side approval recorded in the same
+ledger as mounts and egress endpoints, keyed by the guest/host port pair, and a
+guest that edits its own configuration can only ever create a prompt for the
+trusted host.
+
+Publication is a convenience layered on the sandbox rather than authority it
+needs, so an unapproved mapping is skipped and reported instead of failing the
+command. A non-interactive `up` keeps the sandbox host-local rather than either
+publishing without consent or refusing to start.
+
+Host ports are a single global namespace, so the ledger also records which
+project owns each published port. A second project claiming a port fails by name.
+Without that, it would bind nothing and its own `url` output would point at the
+first project's service.
+
+The listener is a socket-activated `systemd-socket-proxyd` on the host, written by
+a fixed-verb helper (`sync`, `clear`) that validates the instance name, both
+addresses, and every port before writing units it alone owns. The CLI never
+writes unit files or calls `systemctl` itself. Because the listener runs on the
+host and dials the guest across the bridge, the guest sees the bridge gateway as
+the source, which the ACL's ingress rule already allows: publishing grants the
+guest no new authority and relaxes no ACL. Inbound reachability is still subject
+to the tailnet's own policy, which sandboxsh does not manage.
 
 The managed Incus bridge supplies baseline DHCP/DNS before ACL rules. Host bridge
 filtering depends on the installer-loaded `br_netfilter` kernel module, which
@@ -187,5 +217,8 @@ cross-project credential exposure is unacceptable.
 7. Only declared ports accept host connections.
 8. A project-config change requesting an external host path or endpoint fails
    until approved from the host.
-9. Sensitive host paths remain rejected.
-10. CPU, memory, and root-volume limits match `.sandboxsh.json`.
+9. A project-config change requesting tailnet publication is skipped, not
+   published, until approved from the host, and a second project cannot claim a
+   host port another project already publishes.
+10. Sensitive host paths remain rejected.
+11. CPU, memory, and root-volume limits match `.sandboxsh.json`.

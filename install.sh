@@ -25,26 +25,32 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: ./install.sh [--no-deps] [--forward-unit]
+Usage: ./install.sh [--no-deps] [--forward-unit] [--publish-helper]
        curl -fsSL https://raw.githubusercontent.com/derico-de/derico-sandbox/main/install.sh | bash
 
 Installs the Python CLI with pipx and prepares Incus. The user is added only to
 `incus`, which exposes a restricted per-user project. It is deliberately never
 added to the host-root-equivalent `incus-admin` group.
 
-  --no-deps        Skip apt dependency installation.
-  --forward-unit   Install a systemd unit that re-adds the iptables allow rule
-                   for this user's Incus bridge at boot. Needed when Docker or
-                   podman sets the IPv4 FORWARD policy to DROP, which otherwise
-                   blackholes every sandbox after each reboot.
+  --no-deps         Skip apt dependency installation.
+  --forward-unit    Install a systemd unit that re-adds the iptables allow rule
+                    for this user's Incus bridge at boot. Needed when Docker or
+                    podman sets the IPv4 FORWARD policy to DROP, which otherwise
+                    blackholes every sandbox after each reboot.
+  --publish-helper  Install the helper that publishes declared development ports
+                    on this host's tailnet address, so `sandboxsh up` can offer
+                    them as <tailnet-node>:<port>. Without it, declared ports stay
+                    reachable only at the VM's private address.
 EOF
 }
 
 FORWARD_UNIT=0
+PUBLISH_HELPER=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-deps) INSTALL_DEPS=0 ;;
         --forward-unit) FORWARD_UNIT=1 ;;
+        --publish-helper) PUBLISH_HELPER=1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "install.sh: unknown option: $1" >&2; exit 2 ;;
     esac
@@ -184,6 +190,219 @@ WantedBy=multi-user.target
 UNIT
     sudo systemctl daemon-reload
     sudo systemctl enable --now sandboxsh-bridge-forward.service
+fi
+
+if [ "$PUBLISH_HELPER" = 1 ]; then
+    say "Installing the tailnet port publishing helper"
+
+    # sandboxsh calls this with sudo and nothing else: two verbs, fixed unit
+    # names derived from a validated instance name, and no shell interpolation
+    # of caller data into the units. It only ever touches units it wrote.
+    sudo tee /usr/local/sbin/sandboxsh-publish-port >/dev/null <<'HELPER'
+#!/bin/sh
+# Publish sandbox guest ports on a host address. Installed by sandboxsh.
+#
+#   sync <instance> <listen-ip> <guest-ip> <hostport>:<guestport>...
+#   clear <instance>
+#
+# Each mapping becomes a socket-activated systemd-socket-proxyd listener. The
+# host dials the guest over the Incus bridge, so the guest sees the bridge
+# gateway as the source and the VM's own ACL keeps deciding what is reachable.
+set -eu
+
+UNIT_DIR=/etc/systemd/system
+PREFIX=sandboxsh-publish
+
+die() { echo "sandboxsh-publish-port: $*" >&2; exit 1; }
+
+valid_instance() {
+    printf '%s\n' "$1" | grep -Eq '^[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}$'
+}
+
+valid_port() {
+    case "$1" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+valid_ipv4() {
+    printf '%s\n' "$1" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+    old_ifs=$IFS
+    IFS=.
+    # shellcheck disable=SC2086
+    set -- $1
+    IFS=$old_ifs
+    for octet in "$@"; do
+        [ "$octet" -le 255 ] || return 1
+    done
+    return 0
+}
+
+find_proxy() {
+    for candidate in \
+        /usr/lib/systemd/systemd-socket-proxyd \
+        /lib/systemd/systemd-socket-proxyd; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    die "systemd-socket-proxyd is missing; install the systemd package"
+}
+
+# Print each socket unit this tool wrote for one instance.
+existing_units() {
+    for unit in "$UNIT_DIR/$PREFIX-$1-"*.socket; do
+        [ -e "$unit" ] || continue
+        printf '%s\n' "$(basename "$unit" .socket)"
+    done
+}
+
+remove_unit() {
+    systemctl disable --now "$1.socket" >/dev/null 2>&1 || true
+    systemctl stop "$1.service" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$1.socket" "$UNIT_DIR/$1.service"
+}
+
+# Replace a unit only when its content actually changes, so re-running `up`
+# does not drop live connections to unchanged ports.
+install_unit() {
+    path="$1"
+    temporary="$path.sandboxsh-tmp"
+    cat >"$temporary"
+    chmod 0644 "$temporary"
+    if [ -f "$path" ] && cmp -s "$temporary" "$path"; then
+        rm -f "$temporary"
+        return 1
+    fi
+    mv "$temporary" "$path"
+    return 0
+}
+
+command="${1:-}"
+[ -n "$command" ] || die "usage: sandboxsh-publish-port sync|clear ..."
+shift
+
+instance="${1:-}"
+valid_instance "$instance" || die "invalid instance name: $instance"
+shift
+
+case "$command" in
+clear)
+    changed=0
+    for base in $(existing_units "$instance"); do
+        remove_unit "$base"
+        changed=1
+    done
+    if [ "$changed" = 1 ]; then
+        systemctl daemon-reload
+    fi
+    exit 0
+    ;;
+sync) ;;
+*) die "unknown command: $command" ;;
+esac
+
+listen="${1:-}"
+valid_ipv4 "$listen" || die "invalid listen address: $listen"
+shift
+guest="${1:-}"
+valid_ipv4 "$guest" || die "invalid guest address: $guest"
+shift
+[ "$#" -gt 0 ] || die "sync requires at least one <hostport>:<guestport> mapping"
+
+PROXY="$(find_proxy)"
+wanted=""
+reload=0
+rebind=""
+rebackend=""
+
+for mapping in "$@"; do
+    host_port="${mapping%%:*}"
+    guest_port="${mapping##*:}"
+    valid_port "$host_port" || die "invalid host port: $host_port"
+    valid_port "$guest_port" || die "invalid guest port: $guest_port"
+    base="$PREFIX-$instance-$host_port"
+    wanted="$wanted $base"
+
+    # FreeBind lets the listener come up before tailscaled has assigned the
+    # address, which is the normal ordering after a reboot.
+    if install_unit "$UNIT_DIR/$base.socket" <<UNIT
+[Unit]
+Description=sandboxsh published port $host_port for $instance
+Documentation=https://github.com/derico-de/derico-sandbox
+
+[Socket]
+ListenStream=$listen:$host_port
+FreeBind=yes
+
+[Install]
+WantedBy=sockets.target
+UNIT
+    then
+        reload=1
+        rebind="$rebind $base"
+    fi
+
+    if install_unit "$UNIT_DIR/$base.service" <<UNIT
+[Unit]
+Description=sandboxsh proxy for $instance port $guest_port
+Documentation=https://github.com/derico-de/derico-sandbox
+Requires=$base.socket
+After=$base.socket
+
+[Service]
+ExecStart=$PROXY $guest:$guest_port
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UNIT
+    then
+        reload=1
+        rebackend="$rebackend $base"
+    fi
+done
+
+# Withdraw ports this instance no longer declares.
+for base in $(existing_units "$instance"); do
+    keep=0
+    for candidate in $wanted; do
+        if [ "$base" = "$candidate" ]; then
+            keep=1
+        fi
+    done
+    if [ "$keep" = 0 ]; then
+        remove_unit "$base"
+        reload=1
+    fi
+done
+
+if [ "$reload" = 1 ]; then
+    systemctl daemon-reload
+fi
+
+# `start` is a no-op on an already-listening socket, so unchanged ports keep
+# serving untouched; only a rewritten listener is rebound.
+for base in $wanted; do
+    systemctl enable "$base.socket" >/dev/null 2>&1 || die "cannot enable $base.socket"
+    action=start
+    for candidate in $rebind; do
+        if [ "$base" = "$candidate" ]; then
+            action=restart
+        fi
+    done
+    systemctl "$action" "$base.socket" || die "cannot $action $base.socket"
+done
+
+# A proxy already running against the previous guest address must not keep
+# serving it; socket activation starts a fresh one on the next connection.
+for base in $rebackend; do
+    systemctl stop "$base.service" >/dev/null 2>&1 || true
+done
+HELPER
+    sudo chmod 0755 /usr/local/sbin/sandboxsh-publish-port
 fi
 
 say "Installing sandboxsh with pipx from $INSTALL_SOURCE"

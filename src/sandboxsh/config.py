@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 import unicodedata
@@ -72,6 +73,30 @@ class FirewallEntry:
 
 
 @dataclass(frozen=True)
+class PortMapping:
+    """One declared development port, and how it is reached from outside.
+
+    `guest` is what the service binds inside the VM. `host` is the port the
+    tailnet node listens on; they differ only when two projects would otherwise
+    claim the same host port.
+    """
+
+    guest: int
+    host: int
+    tailnet: bool = True
+
+    @property
+    def approval_key(self) -> str:
+        return f"{self.guest}|{self.host}"
+
+
+@dataclass(frozen=True)
+class TailscaleSettings:
+    enabled: bool = True
+    address: str | None = None
+
+
+@dataclass(frozen=True)
 class Resources:
     cpus: int = 4
     memory: str = "8GiB"
@@ -84,17 +109,34 @@ class ProjectConfig:
     name: str
     workdir: str
     mounts: tuple[Mount, ...]
-    ports: tuple[int, ...]
+    ports: tuple[PortMapping, ...]
     firewall_enabled: bool
     firewall_allow: tuple[FirewallEntry, ...]
     resources: Resources
     image: str = "sandboxsh/base"
     agent_credentials: bool = True
+    tailscale: TailscaleSettings = field(default_factory=TailscaleSettings)
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def root(self) -> Path:
         return self.path.parent
+
+    @property
+    def guest_ports(self) -> tuple[int, ...]:
+        """Ports the host-enforced ACL opens for inbound traffic."""
+        return tuple(sorted({mapping.guest for mapping in self.ports}))
+
+    @property
+    def publishable(self) -> tuple[PortMapping, ...]:
+        """Mappings this project asks to expose on the tailnet.
+
+        Asking is not authority: each mapping is still published only after the
+        trusted host approves it, because .sandboxsh.json is guest-writable.
+        """
+        if not self.tailscale.enabled:
+            return ()
+        return tuple(mapping for mapping in self.ports if mapping.tailnet)
 
     @property
     def instance_name(self) -> str:
@@ -141,6 +183,65 @@ def _parse_port(value: Any, label: str) -> int:
     if not 1 <= port <= 65535:
         raise ConfigError(f"{label} must be between 1 and 65535")
     return port
+
+
+def _parse_port_mapping(value: Any, index: int) -> PortMapping:
+    if isinstance(value, dict):
+        _reject_unknown(value, {"guest", "host", "tailnet"}, f"ports[{index}]")
+        if "guest" not in value:
+            raise ConfigError(f'ports[{index}] must set "guest"')
+        guest = _parse_port(value["guest"], f"ports[{index}].guest")
+        host = _parse_port(value.get("host", guest), f"ports[{index}].host")
+        tailnet = value.get("tailnet", True)
+        if not isinstance(tailnet, bool):
+            raise ConfigError(f"ports[{index}].tailnet must be true or false")
+        return PortMapping(guest=guest, host=host, tailnet=tailnet)
+    port = _parse_port(value, f"ports[{index}]")
+    return PortMapping(guest=port, host=port)
+
+
+def _parse_ports(data: dict[str, Any]) -> tuple[PortMapping, ...]:
+    entries = data.get("ports", [])
+    if not isinstance(entries, list):
+        raise ConfigError('"ports" must be an array')
+    mappings = tuple(_parse_port_mapping(value, index) for index, value in enumerate(entries))
+
+    seen_guest: set[int] = set()
+    seen_host: set[int] = set()
+    for mapping in mappings:
+        if mapping.guest in seen_guest:
+            raise ConfigError(f'duplicate guest port in "ports": {mapping.guest}')
+        seen_guest.add(mapping.guest)
+        if not mapping.tailnet:
+            continue
+        # Two mappings on one host port would race for the same listener.
+        if mapping.host in seen_host:
+            raise ConfigError(f'duplicate published host port in "ports": {mapping.host}')
+        seen_host.add(mapping.host)
+    return tuple(sorted(mappings, key=lambda mapping: mapping.guest))
+
+
+def _parse_tailscale(data: dict[str, Any]) -> TailscaleSettings:
+    value = data.get("tailscale", {})
+    if isinstance(value, bool):
+        return TailscaleSettings(enabled=value)
+    if not isinstance(value, dict):
+        raise ConfigError('"tailscale" must be an object or boolean')
+    _reject_unknown(value, {"enabled", "address"}, "tailscale")
+    enabled = value.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError("tailscale.enabled must be true or false")
+    address = value.get("address")
+    if address is not None:
+        if not isinstance(address, str):
+            raise ConfigError("tailscale.address must be a string")
+        _safe_text(address, "tailscale.address")
+        try:
+            parsed = ipaddress.ip_address(address.strip())
+        except ValueError as exc:
+            raise ConfigError(f"tailscale.address must be an IP address: {address}") from exc
+        address = str(parsed)
+    return TailscaleSettings(enabled=enabled, address=address)
 
 
 def _parse_mounts(data: dict[str, Any], root: Path) -> tuple[Mount, ...]:
@@ -268,6 +369,7 @@ def load_config(path: Path | None = None) -> ProjectConfig:
             "limits",
             "agent_credentials",
             "image",
+            "tailscale",
         },
         "configuration",
     )
@@ -287,10 +389,8 @@ def load_config(path: Path | None = None) -> ProjectConfig:
     else:
         workdir = _safe_text(workdir_value, "workdir")
 
-    ports_value = data.get("ports", [])
-    if not isinstance(ports_value, list):
-        raise ConfigError('"ports" must be an array')
-    ports = tuple(sorted({_parse_port(value, "ports") for value in ports_value}))
+    ports = _parse_ports(data)
+    tailscale = _parse_tailscale(data)
 
     firewall = data.get("firewall", {})
     if not isinstance(firewall, dict):
@@ -339,5 +439,6 @@ def load_config(path: Path | None = None) -> ProjectConfig:
         resources=Resources(cpus=cpus, memory=memory, disk=disk),
         image=image,
         agent_credentials=agent_credentials,
+        tailscale=tailscale,
         raw=data,
     )

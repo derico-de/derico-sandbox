@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from .config import FirewallEntry, Mount, ProjectConfig
+from .config import FirewallEntry, Mount, PortMapping, ProjectConfig
 from .errors import SandboxshError
 
 # These endpoints are part of the trusted base policy. Project configuration can
@@ -193,6 +193,132 @@ def revoke_project_approvals(config: ProjectConfig) -> None:
         _save_approvals(ledger)
 
 
+def approved_publications(
+    config: ProjectConfig, *, prompt: bool
+) -> tuple[tuple[PortMapping, ...], tuple[PortMapping, ...]]:
+    """Split requested tailnet publications into approved and pending.
+
+    Publishing moves a port from "reachable by the host that owns this VM" to
+    "reachable by every node on the tailnet", and the request comes from the
+    guest-writable .sandboxsh.json. It therefore needs the same host-side
+    approval as a mount or an egress endpoint.
+
+    Unlike those, an unapproved publication is returned as pending rather than
+    raised: the guest still works without it, so a non-interactive `up` should
+    keep the sandbox host-local instead of failing outright.
+    """
+    requested = config.publishable
+    if not requested:
+        return (), ()
+
+    ledger = _load_approvals()
+    project_key = str(config.path)
+    project = ledger["projects"].setdefault(project_key, {"mounts": [], "firewall": []})
+    recorded = project.setdefault("publish", [])
+
+    approved: list[PortMapping] = []
+    pending: list[PortMapping] = []
+    changed = False
+    for mapping in requested:
+        if mapping.approval_key in recorded:
+            approved.append(mapping)
+            continue
+        if not prompt:
+            pending.append(mapping)
+            continue
+        if not click.confirm(
+            f"Publish project {config.name!r} guest port {mapping.guest} to the whole "
+            f"tailnet on host port {mapping.host}?",
+            default=False,
+        ):
+            pending.append(mapping)
+            continue
+        recorded.append(mapping.approval_key)
+        approved.append(mapping)
+        changed = True
+
+    if changed:
+        _save_approvals(ledger)
+    return tuple(approved), tuple(pending)
+
+
+def _registry_path() -> Path:
+    return state_home() / "published-ports.json"
+
+
+def _load_registry() -> dict:
+    path = _registry_path()
+    if not path.exists():
+        return {"version": 1, "ports": {}}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxshError(f"cannot read published port registry {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise SandboxshError(f"unsupported published port registry format: {path}")
+    data.setdefault("ports", {})
+    return data
+
+
+def _save_registry(data: dict) -> None:
+    path = _registry_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def claim_host_ports(config: ProjectConfig, mappings: tuple[PortMapping, ...]) -> None:
+    """Reserve host ports for this project, refusing another project's port.
+
+    A tailnet node has one port 8080. Without this, the second project to start
+    would bind nothing and its `url` output would quietly point at the first
+    project's service.
+    """
+    registry = _load_registry()
+    ports = registry["ports"]
+    project_key = str(config.path)
+
+    for mapping in mappings:
+        owner = ports.get(str(mapping.host))
+        if owner is not None and owner.get("project") != project_key:
+            raise SandboxshError(
+                f"host port {mapping.host} is already published by {owner['project']} "
+                f"(guest port {owner.get('guest')}). Pick another host port for this "
+                f'project, e.g. {{"guest": {mapping.guest}, "host": {mapping.host + 10000}}} '
+                'in "ports".'
+            )
+
+    wanted = {str(mapping.host): mapping for mapping in mappings}
+    stale = [
+        port
+        for port, owner in ports.items()
+        if owner.get("project") == project_key and port not in wanted
+    ]
+    for port in stale:
+        del ports[port]
+    for port, mapping in wanted.items():
+        ports[port] = {
+            "project": project_key,
+            "instance": config.instance_name,
+            "guest": mapping.guest,
+        }
+    _save_registry(registry)
+
+
+def release_host_ports(config: ProjectConfig) -> None:
+    registry = _load_registry()
+    ports = registry["ports"]
+    project_key = str(config.path)
+    owned = [port for port, owner in ports.items() if owner.get("project") == project_key]
+    if not owned:
+        return
+    for port in owned:
+        del ports[port]
+    _save_registry(registry)
+
+
 def _hostname(value: str) -> str:
     candidate = value.strip()
     if candidate.startswith("[") and candidate.endswith("]"):
@@ -322,13 +448,13 @@ def build_acl_policy(
         )
 
     ingress = []
-    if config.ports:
+    if config.guest_ports:
         rule = {
             "action": "allow",
             "state": "enabled",
             "description": "host access to declared development ports",
             "protocol": "tcp",
-            "destination_port": ",".join(str(port) for port in config.ports),
+            "destination_port": ",".join(str(port) for port in config.guest_ports),
         }
         if bridge_gateway:
             rule["source"] = bridge_gateway

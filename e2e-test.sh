@@ -79,7 +79,8 @@ fi
 
 "$SANDBOXSH" --config "$CONFIG" exec -- sh -c \
     'nohup python3 -m http.server 18080 --bind 0.0.0.0 >/tmp/http.log 2>&1 &'
-ADDRESS="$($SANDBOXSH --config "$CONFIG" url 18080 | sed 's#http://##;s#:.*##')"
+# --vm: this asserts VM ingress, so it must not follow a tailnet publication.
+ADDRESS="$($SANDBOXSH --config "$CONFIG" url 18080 --vm | sed 's#http://##;s#:.*##')"
 for _ in $(seq 1 20); do
     curl -fsS --max-time 2 "http://$ADDRESS:18080" >/dev/null 2>&1 && break
     sleep 1

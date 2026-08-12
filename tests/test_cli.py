@@ -150,3 +150,106 @@ def test_guest_exec_uses_dev_identity_and_configured_workdir(tmp_path: Path) -> 
     assert "runuser" in argv
     assert "dev" in argv
     assert argv[-4:] == ["/workspaces/custom", "docker", "compose", "ps"]
+
+
+class RecordingRunner:
+    def __init__(self) -> None:
+        self.commands: list[list[str]] = []
+
+    def run(self, command, **kwargs):
+        self.commands.append([str(part) for part in command])
+        return Result("", "", 0)
+
+    def exec(self, command, **kwargs):  # pragma: no cover - not expected in these tests
+        raise AssertionError("unexpected exec")
+
+
+def publishing_project(tmp_path: Path, monkeypatch, **updates) -> Path:
+    from sandboxsh import publish, security
+    from sandboxsh.incus import Incus as RealIncus
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "state"))
+    data = {
+        "name": "demo",
+        "dirs": ["."],
+        "ports": [8080, {"guest": 8085, "host": 18085}],
+        "tailscale": {"address": "100.64.0.1"},
+    }
+    data.update(updates)
+    path = tmp_path / ".sandboxsh.json"
+    path.write_text(json.dumps(data))
+
+    monkeypatch.setattr(RealIncus, "verify_host_access", lambda self: self.project)
+    monkeypatch.setattr(RealIncus, "instance_status", lambda self, instance: "Running")
+    monkeypatch.setattr(RealIncus, "guest_ip", lambda self, config: "10.138.35.7")
+    # No tailscale binary, so URLs fall back to the configured address.
+    monkeypatch.setattr(publish.shutil, "which", lambda command: None)
+    monkeypatch.setattr(security.click, "confirm", lambda *args, **kwargs: True)
+    monkeypatch.setattr("sandboxsh.cli._interactive", lambda: True)
+    return path
+
+
+def test_publish_maps_approved_ports_onto_the_tailnet_address(tmp_path: Path, monkeypatch) -> None:
+    from sandboxsh.publish import Publisher
+
+    path = publishing_project(tmp_path, monkeypatch)
+    runner = RecordingRunner()
+    monkeypatch.setattr("sandboxsh.cli.Runner", lambda: runner)
+    monkeypatch.setattr(Publisher, "helper_available", lambda self: True)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "publish"])
+
+    assert result.exit_code == 0, result.output
+    sync = next(command for command in runner.commands if "sync" in command)
+    assert sync[:3] == ["sudo", "/usr/local/sbin/sandboxsh-publish-port", "sync"]
+    # listen address, then guest address, then <hostport>:<guestport>.
+    assert sync[4:] == ["100.64.0.1", "10.138.35.7", "8080:8080", "18085:8085"]
+    assert "http://100.64.0.1:8080 -> guest port 8080" in result.output
+    assert "http://100.64.0.1:18085 -> guest port 8085" in result.output
+
+
+def test_publishing_is_skipped_without_the_host_helper(tmp_path: Path, monkeypatch) -> None:
+    from sandboxsh.publish import Publisher
+
+    path = publishing_project(tmp_path, monkeypatch)
+    runner = RecordingRunner()
+    monkeypatch.setattr("sandboxsh.cli.Runner", lambda: runner)
+    monkeypatch.setattr(Publisher, "helper_available", lambda self: False)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "publish"])
+
+    assert result.exit_code == 0, result.output
+    assert not any("sandboxsh-publish-port" in " ".join(command) for command in runner.commands)
+    assert "helper" in result.output
+    assert "Nothing is published" in result.output
+
+
+def test_url_prefers_the_published_port_over_the_vm_address(tmp_path: Path, monkeypatch) -> None:
+    from sandboxsh.publish import Publisher
+
+    path = publishing_project(tmp_path, monkeypatch)
+    runner = RecordingRunner()
+    monkeypatch.setattr("sandboxsh.cli.Runner", lambda: runner)
+    monkeypatch.setattr(Publisher, "helper_available", lambda self: True)
+    CliRunner().invoke(cli, ["--config", str(path), "publish"])
+
+    published = CliRunner().invoke(cli, ["--config", str(path), "url", "8085"])
+    assert published.output.strip() == "http://100.64.0.1:18085"
+
+    direct = CliRunner().invoke(cli, ["--config", str(path), "url", "8085", "--vm"])
+    assert direct.output.strip() == "http://10.138.35.7:8085"
+
+
+def test_a_port_kept_off_the_tailnet_is_never_published(tmp_path: Path, monkeypatch) -> None:
+    from sandboxsh.publish import Publisher
+
+    path = publishing_project(tmp_path, monkeypatch, ports=[{"guest": 5432, "tailnet": False}])
+    runner = RecordingRunner()
+    monkeypatch.setattr("sandboxsh.cli.Runner", lambda: runner)
+    monkeypatch.setattr(Publisher, "helper_available", lambda self: True)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "publish"])
+
+    assert result.exit_code == 0, result.output
+    assert not any("sync" in command for command in runner.commands)
+    assert "Nothing is published" in result.output
