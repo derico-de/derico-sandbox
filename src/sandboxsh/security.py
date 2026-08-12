@@ -38,6 +38,9 @@ DEFAULT_ENDPOINTS: tuple[FirewallEntry, ...] = (
     FirewallEntry("registry-1.docker.io", (443,)),
     FirewallEntry("auth.docker.io", (443,)),
     FirewallEntry("production.cloudflare.docker.com", (443,)),
+    # Docker Hub serves blobs from CloudFront as well; pulls fetch the
+    # manifest via registry-1 and then hit whichever CDN the blob URL names.
+    FirewallEntry("production.cloudfront.docker.com", (443,)),
     FirewallEntry("impeccable.style", (443,)),
 )
 
