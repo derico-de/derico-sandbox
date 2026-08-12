@@ -387,3 +387,38 @@ def test_lifecycle_query_errors_do_not_look_like_absence(tmp_path: Path) -> None
         assert "permission denied" in str(exc)
     else:
         raise AssertionError("query error was treated as an absent instance")
+
+
+def test_bridge_gateway_falls_back_to_the_host_when_incus_hides_it(tmp_path: Path) -> None:
+    # A restricted project sees the network but not its config, so the address
+    # lookup answers with nothing even though the bridge is up on the host.
+    runner = FakeRunner(
+        [
+            Result("", "", 0),
+            Result(
+                "26: incusbr-1000    inet 10.138.35.1/24 brd 10.138.35.255 "
+                "scope global incusbr-1000\\       valid_lft forever preferred_lft forever\n",
+                "",
+                0,
+            ),
+        ]
+    )
+
+    gateway = Incus(runner).bridge_gateway("incusbr-1000")
+
+    assert gateway == "10.138.35.1"
+    assert runner.commands[1][0] == ["ip", "-4", "-o", "addr", "show", "dev", "incusbr-1000"]
+
+
+def test_bridge_gateway_prefers_what_incus_reports(tmp_path: Path) -> None:
+    runner = FakeRunner([Result("10.138.35.1/24\n", "", 0)])
+
+    assert Incus(runner).bridge_gateway("incusbr-1000") == "10.138.35.1"
+    # The kernel is only consulted when Incus has no usable answer.
+    assert len(runner.commands) == 1
+
+
+def test_bridge_gateway_stays_none_when_the_bridge_has_no_address(tmp_path: Path) -> None:
+    runner = FakeRunner([Result("none\n", "", 0), Result("", "", 1)])
+
+    assert Incus(runner).bridge_gateway("incusbr-1000") is None

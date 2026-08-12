@@ -330,12 +330,46 @@ class Incus:
 
     def bridge_gateway(self, network: str) -> str | None:
         value = self.command("network", "get", network, "ipv4.address", check=False)
-        if value.returncode or not value.stdout.strip() or value.stdout.strip() == "none":
+        address = value.stdout.strip()
+        if not value.returncode and address and address != "none":
+            try:
+                return str(ipaddress.ip_interface(address).ip)
+            except ValueError:
+                pass
+        return self._bridge_gateway_from_kernel(network)
+
+    def _bridge_gateway_from_kernel(self, network: str) -> str | None:
+        """Read the bridge address the host itself holds.
+
+        incus-user owns its per-uid bridge in the `default` network project, and
+        a restricted project can see that the network exists without being able
+        to read its configuration -- `network list` shows an empty IPv4 column
+        and `network get ipv4.address` answers with nothing. The gateway is not
+        actually absent in that case, so ask the kernel, which needs no Incus
+        permission and cannot answer with an unresolved `auto`.
+        """
+        result = self.runner.run(
+            ["ip", "-4", "-o", "addr", "show", "dev", network],
+            check=False,
+        )
+        if result.returncode:
             return None
-        try:
-            return str(ipaddress.ip_interface(value.stdout.strip()).ip)
-        except ValueError:
-            return None
+        fallback = None
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if "inet" not in fields:
+                continue
+            candidate = fields[fields.index("inet") + 1 :]
+            if not candidate:
+                continue
+            try:
+                parsed = str(ipaddress.ip_interface(candidate[0]).ip)
+            except ValueError:
+                continue
+            if "global" in fields:
+                return parsed
+            fallback = fallback or parsed
+        return fallback
 
     def apply_acl(self, config: ProjectConfig) -> AclPolicy:
         network = self.default_network()
