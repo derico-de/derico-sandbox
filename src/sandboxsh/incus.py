@@ -655,6 +655,7 @@ class Incus:
             "root,size=30GiB",
         )
         failure: Exception | None = None
+        policy: AclPolicy | None = None
         try:
             # Supply-chain scripts run only after the same host-enforced ACL used
             # for project VMs is attached to the stopped builder.
@@ -695,6 +696,14 @@ class Incus:
             failure = error
             raise
         finally:
+            # An endpoint the host could not resolve is omitted from the ACL and
+            # the pins, which the guest only ever sees as a connect timeout. The
+            # success path reports it; the failure path has to as well.
+            if failure is not None and policy is not None and policy.unresolved_defaults:
+                failure.add_note(
+                    "built-in endpoints omitted from the ACL because the host could "
+                    "not resolve them: " + ", ".join(policy.unresolved_defaults)
+                )
             # A failed supply-chain fetch is only diagnosable from inside the
             # builder, under the ACL that blocked it, so allow keeping both.
             if failure is not None and os.environ.get("SANDBOXSH_KEEP_BUILDER") == "1":
