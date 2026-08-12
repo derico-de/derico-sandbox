@@ -197,8 +197,19 @@ sudo iptables -I DOCKER-USER -o incusbr-<uid> -m conntrack --ctstate RELATED,EST
 
 On a ufw-managed host, `sudo ufw route allow in on incusbr-<uid>` is equivalent;
 `doctor` accepts an allow rule for the bridge from any chain, whichever tool wrote
-it. Those rules are not persistent; re-add them after a reboot or install them from
-a systemd unit ordered after the container runtime. They grant no authority inside
+it. Either way the rule is lost on reboot. To re-add it at every boot:
+
+```bash
+./install.sh --forward-unit    # or: curl -fsSL <raw install.sh> | bash -s -- --forward-unit
+```
+
+That installs `/usr/local/sbin/sandboxsh-bridge-forward` and a oneshot
+`sandboxsh-bridge-forward.service` ordered after `docker`/`podman`/`incus`. The
+helper only ever adds the two rules — it never flushes a chain, exits cleanly when
+`iptables` is absent, and works before the bridge exists, since an interface match
+does not require the interface. Nothing `Requires=` the unit, so a failure cannot
+hold up the boot. A firewall reload that flushes the chains still drops the rule;
+`sudo systemctl restart sandboxsh-bridge-forward` puts it back. They grant no authority inside
 the sandbox — the ACL is enforced in nftables' `bridge incus` table, which an
 accept in `ip filter` cannot override.
 

@@ -25,18 +25,26 @@ fi
 
 usage() {
     cat <<'EOF'
-Usage: ./install.sh [--no-deps]
+Usage: ./install.sh [--no-deps] [--forward-unit]
        curl -fsSL https://raw.githubusercontent.com/derico-de/derico-sandbox/main/install.sh | bash
 
 Installs the Python CLI with pipx and prepares Incus. The user is added only to
 `incus`, which exposes a restricted per-user project. It is deliberately never
 added to the host-root-equivalent `incus-admin` group.
+
+  --no-deps        Skip apt dependency installation.
+  --forward-unit   Install a systemd unit that re-adds the iptables allow rule
+                   for this user's Incus bridge at boot. Needed when Docker or
+                   podman sets the IPv4 FORWARD policy to DROP, which otherwise
+                   blackholes every sandbox after each reboot.
 EOF
 }
 
+FORWARD_UNIT=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-deps) INSTALL_DEPS=0 ;;
+        --forward-unit) FORWARD_UNIT=1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "install.sh: unknown option: $1" >&2; exit 2 ;;
     esac
@@ -105,6 +113,77 @@ if ! id -nG "$USER" | tr ' ' '\n' | grep -qx incus; then
     NEED_LOGIN=1
 else
     NEED_LOGIN=0
+fi
+
+# incus-user names the per-user bridge after the uid, shortening it when the
+# interface name would exceed the 15-character kernel limit.
+user_bridge() {
+    uid="$(id -u)"
+    name="incusbr-$uid"
+    if [ "${#name}" -gt 15 ]; then
+        name="user-$uid"
+    fi
+    # Prefer what Incus actually attached, when the group membership is active.
+    actual="$(incus --force-local --project "user-$uid" profile device get default eth0 network 2>/dev/null || true)"
+    if [ -n "$actual" ]; then
+        name="$actual"
+    fi
+    printf '%s\n' "$name"
+}
+
+if [ "$FORWARD_UNIT" = 1 ]; then
+    BRIDGE="$(user_bridge)"
+    say "Installing the boot-time forward rule for bridge $BRIDGE"
+
+    # The helper adds two rules and nothing else. It never flushes a chain, so a
+    # partially applied host firewall cannot be made worse by running it, and it
+    # is safe to run repeatedly.
+    sudo tee /usr/local/sbin/sandboxsh-bridge-forward >/dev/null <<'HELPER'
+#!/bin/sh
+# Allow forwarded traffic for one Incus bridge. Installed by sandboxsh.
+set -eu
+
+BRIDGE="${1:?bridge name required}"
+
+# Nothing to police without iptables. Exit clean so boot is never held up.
+command -v iptables >/dev/null 2>&1 || exit 0
+
+# Docker preserves DOCKER-USER across daemon restarts, so prefer it when it is
+# already there. Otherwise go straight into FORWARD, which works whether or not
+# a container runtime ever starts, and stays valid when one starts later.
+CHAIN=FORWARD
+if iptables -n -L DOCKER-USER >/dev/null 2>&1; then
+    CHAIN=DOCKER-USER
+fi
+
+# An iptables interface match does not require the interface to exist, so this
+# is correct even though the per-user bridge appears only on first sandbox use.
+iptables -C "$CHAIN" -i "$BRIDGE" -j ACCEPT 2>/dev/null ||
+    iptables -I "$CHAIN" -i "$BRIDGE" -j ACCEPT
+iptables -C "$CHAIN" -o "$BRIDGE" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null ||
+    iptables -I "$CHAIN" -o "$BRIDGE" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+HELPER
+    sudo chmod 0755 /usr/local/sbin/sandboxsh-bridge-forward
+
+    # Ordering only: After= on an absent unit is inert, and nothing Requires=
+    # this service, so a failure here can never block the boot.
+    sudo tee /etc/systemd/system/sandboxsh-bridge-forward.service >/dev/null <<UNIT
+[Unit]
+Description=Allow forwarded traffic for the sandboxsh Incus bridge $BRIDGE
+Documentation=https://github.com/derico-de/derico-sandbox
+After=network-online.target docker.service podman.service incus.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sandboxsh-bridge-forward $BRIDGE
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now sandboxsh-bridge-forward.service
 fi
 
 say "Installing sandboxsh with pipx from $INSTALL_SOURCE"

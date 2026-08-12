@@ -321,7 +321,9 @@ class Incus:
             f"  sudo iptables -I {chain} -o {network} -m conntrack "
             "--ctstate RELATED,ESTABLISHED -j ACCEPT\n"
             f"On a ufw-managed host, `sudo ufw route allow in on {network}` is "
-            "equivalent and is recognised here too."
+            "equivalent and is recognised here too. Both are lost on reboot; "
+            "`./install.sh --forward-unit` installs a systemd unit that re-adds "
+            "the rule at every boot."
         )
 
     def bridge_gateway(self, network: str) -> str | None:
