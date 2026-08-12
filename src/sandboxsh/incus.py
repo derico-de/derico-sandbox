@@ -631,6 +631,9 @@ class Incus:
                 if not source_path.is_file():
                     raise SandboxshError(f"packaged guest script is missing: {source_path}")
                 self.command("file", "push", str(source_path), f"{builder}/root/{filename}")
+            # Provisioning is the long, supply-chain-facing step. Stream it so a
+            # blocked endpoint is visible as the URL that failed, not just the
+            # last line of a captured buffer.
             self.command(
                 "exec",
                 builder,
@@ -639,6 +642,7 @@ class Incus:
                 "/root/provision.sh",
                 str(os.getuid()),
                 str(os.getgid()),
+                capture=False,
             )
             self.command("exec", builder, "--", "cloud-init", "clean", "--logs", "--machine-id")
             self.command("stop", builder, "--force")
@@ -647,11 +651,21 @@ class Incus:
             failure = error
             raise
         finally:
-            self.command("delete", builder, "--force", check=False)
-            try:
-                self.delete_acl(build_config)
-            except Exception as cleanup_error:
-                if failure is None:
-                    raise
-                failure.add_note(f"ACL cleanup also failed: {cleanup_error}")
+            # A failed supply-chain fetch is only diagnosable from inside the
+            # builder, under the ACL that blocked it, so allow keeping both.
+            if failure is not None and os.environ.get("SANDBOXSH_KEEP_BUILDER") == "1":
+                failure.add_note(
+                    f"kept builder {builder} and its ACL for inspection; "
+                    f"enter it with `incus --project {self.project} exec {builder} -- bash`, "
+                    f"then remove it with `incus --project {self.project} delete {builder} "
+                    "--force` and rerun `sandboxsh image build`"
+                )
+            else:
+                self.command("delete", builder, "--force", check=False)
+                try:
+                    self.delete_acl(build_config)
+                except Exception as cleanup_error:
+                    if failure is None:
+                        raise
+                    failure.add_note(f"ACL cleanup also failed: {cleanup_error}")
         return policy

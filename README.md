@@ -180,6 +180,11 @@ project-added endpoint remains an error.
 `firewall.enabled=false` is rejected unless the trusted host shell explicitly
 sets `SANDBOXSH_ALLOW_OPEN_NETWORK=1`.
 
+`sandboxsh image build` streams the provisioning output, so a blocked endpoint
+appears as the URL that timed out. `SANDBOXSH_KEEP_BUILDER=1` keeps the builder VM
+and its ACL when provisioning fails, so the same request can be retried from
+inside the VM under the ACL that blocked it. Delete the builder afterwards.
+
 To open a development server, declare its guest port and bind the service to
 `0.0.0.0` inside the VM:
 
