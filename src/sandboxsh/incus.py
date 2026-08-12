@@ -418,7 +418,7 @@ class Incus:
         document = "\n".join([PIN_BEGIN, *entries, PIN_END]) + "\n"
         script = (
             f"set -e; sed -i '/{PIN_BEGIN}/,/{PIN_END}/d' /etc/hosts; "
-            'printf \'%s\' "$1" >> /etc/hosts'
+            "printf '%s' \"$1\" >> /etc/hosts"
         )
         self.command("exec", instance, "--", "bash", "-c", script, "sandboxsh", document)
 

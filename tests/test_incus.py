@@ -122,9 +122,7 @@ def test_host_acl_name_is_user_scoped_and_bounded(tmp_path: Path) -> None:
     assert len(acl) <= 63
 
 
-def test_acl_management_uses_admin_default_network_project(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_acl_management_uses_admin_default_network_project(tmp_path: Path, monkeypatch) -> None:
     class AclRunner(FakeRunner):
         def run(self, command, **kwargs):
             self.commands.append((list(command), kwargs))
@@ -160,9 +158,7 @@ def test_acl_management_uses_admin_default_network_project(
     assert query[-1] == f"/1.0/network-acls/{acl}?project=default"
 
 
-def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_apply_acl_reuses_stale_acl_when_create_reports_exists(tmp_path: Path, monkeypatch) -> None:
     class StaleAclRunner(FakeRunner):
         def run(self, command, **kwargs):
             self.commands.append((list(command), kwargs))
@@ -306,9 +302,7 @@ def test_delete_acl_uses_admin_default_network_project(tmp_path: Path) -> None:
 
     query = runner.commands[0][0]
     assert query[:6] == ["sudo", "incus", "--force-local", "query", "-X", "DELETE"]
-    assert query[-1] == (
-        f"/1.0/network-acls/{incus._host_acl_name(project)}?project=default"
-    )
+    assert query[-1] == (f"/1.0/network-acls/{incus._host_acl_name(project)}?project=default")
 
 
 def test_delete_acl_is_idempotent_without_listing(tmp_path: Path) -> None:

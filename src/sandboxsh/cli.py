@@ -146,8 +146,7 @@ def _verify_and_approve(context: Context, config: ProjectConfig) -> None:
 def _report_unresolved_defaults(policy: AclPolicy) -> None:
     if policy.unresolved_defaults:
         click.echo(
-            "Skipped unavailable built-in endpoint(s): "
-            + ", ".join(policy.unresolved_defaults),
+            "Skipped unavailable built-in endpoint(s): " + ", ".join(policy.unresolved_defaults),
             err=True,
         )
 
