@@ -303,10 +303,15 @@ class Incus:
             return None
         if not any(line.strip() == "-P FORWARD DROP" for line in forward.stdout.splitlines()):
             return None
-        chain = "DOCKER-USER" if "-j DOCKER-USER" in forward.stdout else "FORWARD"
-        existing = self.runner.run(["sudo", "-n", "iptables", "-S", chain], check=False)
-        if existing.returncode == 0 and f"-i {network} -j ACCEPT" in existing.stdout:
+        # Any chain will do -- ufw, firewalld, and a hand-written DOCKER-USER rule
+        # all end up as an accept for the bridge somewhere in the filter table.
+        existing = self.runner.run(["sudo", "-n", "iptables", "-S"], check=False)
+        if existing.returncode == 0 and any(
+            f"-i {network} " in f"{line} " and line.endswith("-j ACCEPT")
+            for line in existing.stdout.splitlines()
+        ):
             return None
+        chain = "DOCKER-USER" if "-j DOCKER-USER" in forward.stdout else "FORWARD"
         return (
             f"the host's IPv4 FORWARD policy is DROP and nothing accepts bridge "
             f"{network!r}, so the VM cannot reach any allowlisted endpoint. A "
@@ -314,7 +319,9 @@ class Incus:
             "bridge, which leaves ACL enforcement in the bridge table untouched:\n"
             f"  sudo iptables -I {chain} -i {network} -j ACCEPT\n"
             f"  sudo iptables -I {chain} -o {network} -m conntrack "
-            "--ctstate RELATED,ESTABLISHED -j ACCEPT"
+            "--ctstate RELATED,ESTABLISHED -j ACCEPT\n"
+            f"On a ufw-managed host, `sudo ufw route allow in on {network}` is "
+            "equivalent and is recognised here too."
         )
 
     def bridge_gateway(self, network: str) -> str | None:

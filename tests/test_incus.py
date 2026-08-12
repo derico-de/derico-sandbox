@@ -188,11 +188,9 @@ def test_blocked_forwarding_is_reported_with_the_bridge_and_a_remedy() -> None:
     class ForwardRunner(FakeRunner):
         def run(self, command, **kwargs):
             self.commands.append((list(command), kwargs))
-            if command[:4] == ["sudo", "-n", "iptables", "-S"]:
-                if command[4] == "FORWARD":
-                    return Result("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n", "", 0)
-                return Result("-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n", "", 0)
-            return Result("", "", 0)
+            if command[4:5] == ["FORWARD"]:
+                return Result("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n", "", 0)
+            return Result("-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n", "", 0)
 
     remedy = Incus(ForwardRunner()).blocked_forwarding_remedy("incusbr-1000")
 
@@ -201,14 +199,35 @@ def test_blocked_forwarding_is_reported_with_the_bridge_and_a_remedy() -> None:
 
 
 def test_forwarding_check_passes_once_the_bridge_is_accepted() -> None:
+    # Whichever tool wrote it: a hand-written DOCKER-USER rule or `ufw route allow`.
     class AcceptedRunner(FakeRunner):
+        def __init__(self, accept):
+            super().__init__()
+            self.accept = accept
+
         def run(self, command, **kwargs):
             self.commands.append((list(command), kwargs))
             if command[4:5] == ["FORWARD"]:
                 return Result("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n", "", 0)
-            return Result("-A DOCKER-USER -i incusbr-1000 -j ACCEPT\n", "", 0)
+            return Result(self.accept, "", 0)
 
-    assert Incus(AcceptedRunner()).blocked_forwarding_remedy("incusbr-1000") is None
+    for accept in (
+        "-A DOCKER-USER -i incusbr-1000 -j ACCEPT\n",
+        "-A ufw-user-forward -i incusbr-1000 -j ACCEPT\n",
+    ):
+        runner = AcceptedRunner(accept)
+        assert Incus(runner).blocked_forwarding_remedy("incusbr-1000") is None
+
+
+def test_forwarding_check_ignores_an_accept_for_another_bridge() -> None:
+    class OtherBridgeRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            if command[4:5] == ["FORWARD"]:
+                return Result("-P FORWARD DROP\n", "", 0)
+            return Result("-A DOCKER-USER -i incusbr-10001 -j ACCEPT\n", "", 0)
+
+    assert Incus(OtherBridgeRunner()).blocked_forwarding_remedy("incusbr-1000") is not None
 
 
 def test_forwarding_check_is_silent_without_privileges_or_iptables() -> None:

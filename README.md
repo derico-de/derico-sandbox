@@ -195,8 +195,10 @@ sudo iptables -I DOCKER-USER -i incusbr-<uid> -j ACCEPT
 sudo iptables -I DOCKER-USER -o incusbr-<uid> -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 ```
 
-Those rules are not persistent; re-add them after a reboot or install them from a
-systemd unit ordered after the container runtime. They grant no authority inside
+On a ufw-managed host, `sudo ufw route allow in on incusbr-<uid>` is equivalent;
+`doctor` accepts an allow rule for the bridge from any chain, whichever tool wrote
+it. Those rules are not persistent; re-add them after a reboot or install them from
+a systemd unit ordered after the container runtime. They grant no authority inside
 the sandbox — the ACL is enforced in nftables' `bridge incus` table, which an
 accept in `ip filter` cannot override.
 
