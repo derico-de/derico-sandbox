@@ -322,8 +322,10 @@ class Incus:
             "--ctstate RELATED,ESTABLISHED -j ACCEPT\n"
             f"On a ufw-managed host, `sudo ufw route allow in on {network}` is "
             "equivalent and is recognised here too. Both are lost on reboot; "
-            "`./install.sh --forward-unit` installs a systemd unit that re-adds "
-            "the rule at every boot."
+            "re-run the installer with --forward-unit to add a systemd unit that "
+            "reapplies the rule at every boot:\n"
+            "  curl -fsSL https://raw.githubusercontent.com/derico-de/"
+            "derico-sandbox/main/install.sh | bash -s -- --forward-unit --no-deps"
         )
 
     def bridge_gateway(self, network: str) -> str | None:
