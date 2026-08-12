@@ -735,6 +735,10 @@ class Incus:
             # The pins belong to this build, not to every VM cloned from the image.
             self.unpin_allowlist(builder)
             self.command("exec", builder, "--", "cloud-init", "clean", "--logs", "--machine-id")
+            # A forced stop is a power cut. Flush the guest page cache first so
+            # provisioning's final writes -- the init helpers land seconds before
+            # this point -- are on disk in the image that publish snapshots.
+            self.command("exec", builder, "--", "sync")
             self.command("stop", builder, "--force")
             self.command("publish", builder, "--alias", image, "--reuse")
         except Exception as error:
