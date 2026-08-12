@@ -672,6 +672,8 @@ class Incus:
             firewall_enabled=True,
             firewall_allow=(
                 FirewallEntry("claude.ai"),
+                # claude.ai/install.sh fetches the actual binary from here.
+                FirewallEntry("downloads.claude.ai"),
                 FirewallEntry("pi.dev"),
                 FirewallEntry("storage.googleapis.com"),
                 *extra_hosts,
