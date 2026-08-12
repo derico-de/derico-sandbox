@@ -717,10 +717,14 @@ class Incus:
                 self.command("file", "push", str(source_path), f"{builder}/root/{filename}")
             # Provisioning is the long, supply-chain-facing step. Stream it so a
             # blocked endpoint is visible as the URL that failed, not just the
-            # last line of a captured buffer.
+            # last line of a captured buffer. Streaming inherits the caller's
+            # terminal, so refuse stdin and the pty that comes with it: piped
+            # installers must take their non-interactive defaults, never sit on
+            # a prompt inside an unattended build.
             self.command(
                 "exec",
                 builder,
+                "--disable-stdin",
                 "--",
                 "bash",
                 "/root/provision.sh",
