@@ -431,6 +431,19 @@ def doctor_command(context: Context) -> None:
     except SandboxshError as exc:
         click.echo(f"FAIL {exc}")
         failures.append("incus-access")
+    else:
+        try:
+            network = context.incus.default_network()
+            remedy = context.incus.blocked_forwarding_remedy(network)
+        except SandboxshError as exc:
+            click.echo(f"FAIL {exc}")
+            failures.append("bridge-forwarding")
+        else:
+            if remedy is None:
+                click.echo(f"PASS host forwards traffic from bridge {network}")
+            else:
+                click.echo(f"FAIL {remedy}")
+                failures.append("bridge-forwarding")
     if failures:
         raise SandboxshError(f"doctor found {len(failures)} problem(s)")
     click.echo("Host is ready for sandboxsh.")

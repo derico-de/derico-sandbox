@@ -184,6 +184,45 @@ def test_apply_acl_reuses_stale_acl_when_create_reports_exists(
     assert any("query" in command for command, _ in runner.commands)
 
 
+def test_blocked_forwarding_is_reported_with_the_bridge_and_a_remedy() -> None:
+    class ForwardRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            if command[:4] == ["sudo", "-n", "iptables", "-S"]:
+                if command[4] == "FORWARD":
+                    return Result("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n", "", 0)
+                return Result("-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n", "", 0)
+            return Result("", "", 0)
+
+    remedy = Incus(ForwardRunner()).blocked_forwarding_remedy("incusbr-1000")
+
+    assert remedy is not None
+    assert "sudo iptables -I DOCKER-USER -i incusbr-1000 -j ACCEPT" in remedy
+
+
+def test_forwarding_check_passes_once_the_bridge_is_accepted() -> None:
+    class AcceptedRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            if command[4:5] == ["FORWARD"]:
+                return Result("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n", "", 0)
+            return Result("-A DOCKER-USER -i incusbr-1000 -j ACCEPT\n", "", 0)
+
+    assert Incus(AcceptedRunner()).blocked_forwarding_remedy("incusbr-1000") is None
+
+
+def test_forwarding_check_is_silent_without_privileges_or_iptables() -> None:
+    runner = FakeRunner([Result("", "sudo: a password is required", 1)])
+
+    assert Incus(runner).blocked_forwarding_remedy("incusbr-1000") is None
+
+
+def test_forwarding_check_accepts_a_permissive_policy() -> None:
+    runner = FakeRunner([Result("-P FORWARD ACCEPT\n", "", 0)])
+
+    assert Incus(runner).blocked_forwarding_remedy("incusbr-1000") is None
+
+
 def test_pin_allowlist_writes_the_host_resolved_addresses() -> None:
     runner = FakeRunner()
     policy = AclPolicy(

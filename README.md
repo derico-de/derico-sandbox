@@ -185,6 +185,21 @@ project-added endpoint remains an error.
 `firewall.enabled=false` is rejected unless the trusted host shell explicitly
 sets `SANDBOXSH_ALLOW_OPEN_NETWORK=1`.
 
+If Docker or podman also runs on the host, it sets the IPv4 `FORWARD` policy to
+`DROP` and accepts only its own bridges. VM traffic is routed off the Incus bridge
+and crosses that hook, so every allowlisted endpoint blackholes while host-side
+checks keep working. `sandboxsh doctor` detects this and prints the fix:
+
+```bash
+sudo iptables -I DOCKER-USER -i incusbr-<uid> -j ACCEPT
+sudo iptables -I DOCKER-USER -o incusbr-<uid> -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+```
+
+Those rules are not persistent; re-add them after a reboot or install them from a
+systemd unit ordered after the container runtime. They grant no authority inside
+the sandbox — the ACL is enforced in nftables' `bridge incus` table, which an
+accept in `ip filter` cannot override.
+
 `sandboxsh image build` streams the provisioning output, so a blocked endpoint
 appears as the URL that timed out. `SANDBOXSH_KEEP_BUILDER=1` keeps the builder VM
 and its ACL when provisioning fails, so the same request can be retried from

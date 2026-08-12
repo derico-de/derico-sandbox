@@ -289,6 +289,34 @@ class Incus:
             raise SandboxshError("default Incus profile has no managed eth0 network")
         return network
 
+    def blocked_forwarding_remedy(self, network: str) -> str | None:
+        """Report a container runtime's FORWARD lockdown swallowing the bridge.
+
+        The VM's traffic is routed off the bridge, so it crosses the host's IPv4
+        FORWARD hook. Docker and podman set that policy to DROP and accept only
+        their own bridges, which silently blackholes every allowlisted endpoint;
+        host-side checks keep working because host traffic never passes FORWARD.
+        """
+        forward = self.runner.run(["sudo", "-n", "iptables", "-S", "FORWARD"], check=False)
+        if forward.returncode:
+            # No iptables, or no cached credentials to read it with.
+            return None
+        if not any(line.strip() == "-P FORWARD DROP" for line in forward.stdout.splitlines()):
+            return None
+        chain = "DOCKER-USER" if "-j DOCKER-USER" in forward.stdout else "FORWARD"
+        existing = self.runner.run(["sudo", "-n", "iptables", "-S", chain], check=False)
+        if existing.returncode == 0 and f"-i {network} -j ACCEPT" in existing.stdout:
+            return None
+        return (
+            f"the host's IPv4 FORWARD policy is DROP and nothing accepts bridge "
+            f"{network!r}, so the VM cannot reach any allowlisted endpoint. A "
+            "container runtime (Docker/podman) installs that policy. Allow the "
+            "bridge, which leaves ACL enforcement in the bridge table untouched:\n"
+            f"  sudo iptables -I {chain} -i {network} -j ACCEPT\n"
+            f"  sudo iptables -I {chain} -o {network} -m conntrack "
+            "--ctstate RELATED,ESTABLISHED -j ACCEPT"
+        )
+
     def bridge_gateway(self, network: str) -> str | None:
         value = self.command("network", "get", network, "ipv4.address", check=False)
         if value.returncode or not value.stdout.strip() or value.stdout.strip() == "none":
@@ -699,6 +727,10 @@ class Incus:
             # An endpoint the host could not resolve is omitted from the ACL and
             # the pins, which the guest only ever sees as a connect timeout. The
             # success path reports it; the failure path has to as well.
+            if failure is not None:
+                remedy = self.blocked_forwarding_remedy(self.default_network())
+                if remedy is not None:
+                    failure.add_note(remedy)
             if failure is not None and policy is not None and policy.unresolved_defaults:
                 failure.add_note(
                     "built-in endpoints omitted from the ACL because the host could "

@@ -45,11 +45,32 @@ def test_doctor_requires_bridge_netfilter(monkeypatch) -> None:
     monkeypatch.setattr(Path, "exists", exists)
     monkeypatch.setattr("sandboxsh.cli.shutil.which", lambda command: f"/usr/bin/{command}")
     monkeypatch.setattr(Incus, "verify_host_access", lambda self: self.project)
+    monkeypatch.setattr(Incus, "default_network", lambda self: "incusbr-1000")
+    monkeypatch.setattr(Incus, "blocked_forwarding_remedy", lambda self, network: None)
+
+    result = CliRunner().invoke(cli, ["doctor"])
+
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 1
+    assert "FAIL br_netfilter kernel module is not loaded" in result.output
+    assert "PASS host forwards traffic from bridge incusbr-1000" in result.output
+
+
+def test_doctor_reports_a_container_runtime_blocking_the_bridge(monkeypatch) -> None:
+    monkeypatch.setattr(Path, "exists", lambda path: True)
+    monkeypatch.setattr("sandboxsh.cli.shutil.which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(Incus, "verify_host_access", lambda self: self.project)
+    monkeypatch.setattr(Incus, "default_network", lambda self: "incusbr-1000")
+    monkeypatch.setattr(
+        Incus,
+        "blocked_forwarding_remedy",
+        lambda self, network: f"FORWARD policy is DROP and nothing accepts {network}",
+    )
 
     result = CliRunner().invoke(cli, ["doctor"])
 
     assert result.exit_code == 1
-    assert "FAIL br_netfilter kernel module is not loaded" in result.output
+    assert "FAIL FORWARD policy is DROP and nothing accepts incusbr-1000" in result.output
 
 
 @pytest.mark.parametrize(

@@ -109,6 +109,13 @@ resolution cannot select a CDN address the host never allowlisted. Guest root ca
 edit that file, so it is treated as availability only and grants no authority: it
 can name nothing the ACL does not already permit.
 
+A container runtime on the host (Docker, podman) sets the IPv4 `FORWARD` policy to
+`DROP`, which blackholes the VM's routed traffic. The documented remedy accepts the
+Incus bridge in `ip filter` only; ACL enforcement lives in the `bridge incus`
+nftables table and still applies to every packet, so the sandbox keeps its egress
+boundary. `sandboxsh doctor` reports the condition rather than applying it, because
+editing another daemon's firewall chains is the host owner's decision.
+
 The managed Incus bridge supplies baseline DHCP/DNS before ACL rules. Host bridge
 filtering depends on the installer-loaded `br_netfilter` kernel module, which
 `sandboxsh doctor` verifies. The ACL is refreshed explicitly after address rotation. Existing persistent guests are
