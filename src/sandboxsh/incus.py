@@ -18,6 +18,42 @@ from .security import AclPolicy, build_acl_policy
 DEFAULT_POOL = os.environ.get("SANDBOXSH_STORAGE_POOL", "default")
 CREDS_VOLUME = "sandboxsh-agent-creds"
 
+# Older daemons validate a bridged NIC's `security.acls` against the network
+# project (`default`, because the user project has features.networks=false) but
+# look the same ACL up in the *instance* project while starting the NIC. The ACL
+# API only ever writes to the network project, so no reachable configuration
+# satisfies both and every start fails with "Network ACL not found". Upstream
+# fixed the start-time lookup in 6.0.6 (LTS) and 6.22.0.
+ACL_PROJECT_FIX_LTS = (6, 0, 6)
+ACL_PROJECT_FIX_FEATURE = (6, 22, 0)
+
+
+def parse_server_version(value: str) -> tuple[int, int, int] | None:
+    parts = value.strip().split(".")[:3]
+    numbers = []
+    for part in parts:
+        digits = ""
+        for character in part:
+            if not character.isdigit():
+                break
+            digits += character
+        if not digits:
+            break
+        numbers.append(int(digits))
+    if not numbers:
+        return None
+    while len(numbers) < 3:
+        numbers.append(0)
+    return (numbers[0], numbers[1], numbers[2])
+
+
+def acl_project_lookup_is_broken(version: tuple[int, int, int]) -> bool:
+    if version[0] != 6:
+        return version[0] < 6
+    if version[1] == 0:
+        return version < ACL_PROJECT_FIX_LTS
+    return version < ACL_PROJECT_FIX_FEATURE
+
 
 class Incus:
     def __init__(self, runner: Runner | None = None) -> None:
@@ -83,6 +119,35 @@ class Incus:
         command.append(endpoint)
         return self.runner.run(command, check=check)
 
+    def server_version(self) -> tuple[int, int, int] | None:
+        result = self.command("query", "/1.0", check=False)
+        if result.returncode:
+            return None
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        environment = payload.get("environment")
+        if not isinstance(environment, dict):
+            return None
+        return parse_server_version(str(environment.get("server_version", "")))
+
+    def verify_acl_enforcement(self) -> tuple[int, int, int] | None:
+        """Reject daemons that cannot enforce a NIC ACL in the user project."""
+        version = self.server_version()
+        if version is None or not acl_project_lookup_is_broken(version):
+            return version
+        rendered = ".".join(str(part) for part in version)
+        raise SandboxshError(
+            f"Incus {rendered} cannot enforce per-VM network ACLs in the restricted "
+            f"user project {self.project!r}: it starts bridged NICs by resolving "
+            "`security.acls` in the instance project while ACLs only exist in the "
+            "`default` network project, so every VM fails to start with "
+            "'Network ACL not found'. Upgrade to Incus "
+            f"{'.'.join(str(part) for part in ACL_PROJECT_FIX_LTS)} (LTS) or "
+            f"{'.'.join(str(part) for part in ACL_PROJECT_FIX_FEATURE)}+."
+        )
+
     def verify_host_access(self) -> str:
         """Require the restricted incus-user socket, never incus-admin by default."""
         try:
@@ -124,6 +189,9 @@ class Incus:
                 f"Incus project {expected!r} must use features.networks=false "
                 "for its incus-user managed bridge"
             )
+        # The ACL is the whole network boundary, so a daemon that silently cannot
+        # apply it is a hard failure rather than a degraded mode.
+        self.verify_acl_enforcement()
         return expected
 
     @staticmethod

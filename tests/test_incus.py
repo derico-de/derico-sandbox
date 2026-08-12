@@ -5,7 +5,7 @@ from pathlib import Path
 from sandboxsh import security
 from sandboxsh.config import load_config
 from sandboxsh.errors import SandboxshError
-from sandboxsh.incus import Incus
+from sandboxsh.incus import Incus, acl_project_lookup_is_broken, parse_server_version
 from sandboxsh.process import Result
 
 
@@ -58,6 +58,54 @@ def test_verify_host_access_requires_incus_user_network_project() -> None:
         assert "features.networks=false" in str(exc)
     else:
         raise AssertionError("unsupported project-local networking was accepted")
+
+
+def _host_access_responses(version: str | None) -> list[Result]:
+    project = f"user-{os.getuid()}"
+    responses = [
+        Result(json.dumps([{"name": project}]), "", 0),
+        Result("true\n", "", 0),
+        Result("false\n", "", 0),
+    ]
+    if version is None:
+        responses.append(Result("", "not found", 1))
+    else:
+        responses.append(Result(json.dumps({"environment": {"server_version": version}}), "", 0))
+    return responses
+
+
+def test_acl_project_lookup_is_broken_before_the_upstream_fixes() -> None:
+    broken = ("5.21.2", "6.0.0", "6.0.4", "6.0.5", "6.14.0", "6.21.0")
+    fixed = ("6.0.6", "6.0.7", "6.22.0", "6.23.0", "7.0.0")
+
+    for version in broken:
+        assert acl_project_lookup_is_broken(parse_server_version(version)), version
+    for version in fixed:
+        assert not acl_project_lookup_is_broken(parse_server_version(version)), version
+
+
+def test_verify_host_access_rejects_daemon_that_cannot_apply_the_acl() -> None:
+    runner = FakeRunner(_host_access_responses("6.0.4"))
+
+    try:
+        Incus(runner).verify_host_access()
+    except SandboxshError as exc:
+        assert "6.0.4" in str(exc)
+        assert "Network ACL not found" in str(exc)
+    else:
+        raise AssertionError("a daemon that cannot enforce the NIC ACL was accepted")
+
+
+def test_verify_host_access_accepts_a_patched_daemon() -> None:
+    runner = FakeRunner(_host_access_responses("6.0.6"))
+
+    assert Incus(runner).verify_host_access() == f"user-{os.getuid()}"
+
+
+def test_verify_host_access_tolerates_an_unreadable_daemon_version() -> None:
+    runner = FakeRunner(_host_access_responses(None))
+
+    assert Incus(runner).verify_host_access() == f"user-{os.getuid()}"
 
 
 def test_host_acl_name_is_user_scoped_and_bounded(tmp_path: Path) -> None:

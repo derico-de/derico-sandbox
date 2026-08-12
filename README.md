@@ -40,8 +40,12 @@ See [SECURITY.md](SECURITY.md) for the threat model and residual risks.
 
 ## Install
 
-Host requirements: Linux, KVM, systemd, current Incus, Python 3.11+, `pipx`,
-`sudo`, and `kmod`. The installer loads `br_netfilter` immediately and persists it
+Host requirements: Linux, KVM, systemd, Incus **6.0.6+ (LTS) or 6.22+**, Python
+3.11+, `pipx`, `sudo`, and `kmod`. Earlier daemons look a bridged NIC's ACL up in
+the instance's own project while ACLs can only exist in the `default` network
+project, so every sandbox fails to start with `Network ACL not found`; Debian 13's
+packaged 6.0.4 is affected, so install Incus from the upstream (zabbly) LTS
+repository. The installer loads `br_netfilter` immediately and persists it
 through `/etc/modules-load.d/sandboxsh.conf` because Incus NIC filtering requires
 bridge netfilter support.
 On a Debian/Ubuntu-style host, run the installer directly from GitHub:

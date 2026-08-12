@@ -58,6 +58,24 @@ fi
 for command in incus pipx git modprobe; do
     command -v "$command" >/dev/null || fail "missing dependency: $command"
 done
+
+# Incus before 6.0.6/6.22.0 starts a bridged NIC by resolving `security.acls` in
+# the instance's project, while ACLs can only be created in the `default` network
+# project. Sandboxes on such a daemon never start.
+incus_acl_lookup_broken() {
+    awk -v version="$1" 'BEGIN {
+        split(version, part, ".")
+        major = part[1] + 0; minor = part[2] + 0; patch = part[3] + 0
+        if (major != 6) { exit major < 6 ? 0 : 1 }
+        if (minor == 0) { exit patch < 6 ? 0 : 1 }
+        exit minor < 22 ? 0 : 1
+    }'
+}
+
+INCUS_VERSION="$(incus --version 2>/dev/null | head -n1)"
+if [ -n "$INCUS_VERSION" ] && incus_acl_lookup_broken "$INCUS_VERSION"; then
+    fail "Incus $INCUS_VERSION cannot enforce per-VM network ACLs in a restricted user project (fixed upstream in 6.0.6 and 6.22.0). Install a newer Incus, for example from https://github.com/zabbly/incus, then rerun with --no-deps"
+fi
 [ -e /dev/kvm ] || fail "/dev/kvm is missing; enable CPU virtualization/KVM"
 
 say "Loading bridge netfilter support"

@@ -36,6 +36,12 @@ limited to the user's home, and `features.networks=false`. The last setting mean
 the per-user bridge and its ACL namespace are owned by `default`; Incus 6.0 does
 not support managed bridges in non-default projects.
 
+This layout needs Incus 6.0.6+ (LTS) or 6.22+. `nic_bridged` in older daemons
+validates `security.acls` against the network project but looks it up in the
+instance's project while starting the NIC, so a VM in `user-<uid>` fails with
+`Failed to start device "eth0": Failed loading ACL … Network ACL not found`. The
+version is checked alongside the trust-boundary checks.
+
 The trusted host therefore uses interactive `sudo incus` only for UID-scoped ACL
 create/update/delete operations in the default network project. Policy generation,
 private-address checks, and approval of project-added destinations happen before

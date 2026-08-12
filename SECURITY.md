@@ -55,6 +55,13 @@ authority is validated and approved before the privileged update. VM, image,
 storage, mount, and device lifecycle operations remain on the restricted socket.
 The untrusted guest has no path to invoke this host-side sudo operation.
 
+That split requires Incus 6.0.6+ (LTS) or 6.22+. Earlier daemons validate a NIC's
+`security.acls` against the `default` network project but resolve it against the
+instance's own project when the NIC is brought up, and the ACL API can only write
+to the network project. No configuration satisfies both, so the VM never starts.
+`sandboxsh doctor` and every mutating command reject those daemons rather than
+letting an unenforceable policy look applied.
+
 Incus documents access to the administrator Unix socket as full daemon control,
 including attaching host filesystems and devices.
 
