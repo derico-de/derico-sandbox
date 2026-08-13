@@ -94,6 +94,7 @@ curl -fsSL https://pi.dev/install.sh | sh
 "$HOME/.local/bin/uv" tool install pytest
 "$HOME/.local/bin/uv" tool install tox --with tox-uv
 "$HOME/.local/bin/uv" tool install invoke --with tomlkit
+"$HOME/.local/bin/uv" tool install plonecli
 pi install npm:pi-subagents
 pi install npm:pi-impeccable
 pi install npm:sideshow
