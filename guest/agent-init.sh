@@ -36,7 +36,7 @@ statusline="$(dirname "$settings")/statusline.sh"
 tmp="$(mktemp)"
 cat > "$tmp" <<'STATUSLINE'
 #!/bin/sh
-# Claude Code status line: model, directory, git branch, context-window usage.
+# Claude Code status line: model, workspace, context, and plan-limit usage.
 input=$(cat)
 field() { printf '%s' "$input" | jq -r "$1"; }
 model=$(field '.model.display_name // "Claude"')
@@ -45,6 +45,8 @@ branch=$(git -C "$current_dir" branch --show-current 2>/dev/null || true)
 pct=$(field '.context_window.used_percentage // empty' | cut -d. -f1)
 used=$(field '.context_window.total_input_tokens // empty')
 size=$(field '.context_window.context_window_size // empty')
+five_hour_pct=$(field '.rate_limits.five_hour.used_percentage // empty' | cut -d. -f1)
+week_pct=$(field '.rate_limits.seven_day.used_percentage // empty' | cut -d. -f1)
 line="[$model] $(basename "$current_dir")"
 [ -n "$branch" ] && line="$line ($branch)"
 if [ -n "$pct" ]; then
@@ -52,6 +54,8 @@ if [ -n "$pct" ]; then
     [ -n "$used" ] && [ -n "$size" ] && ctx="$ctx ($((used / 1000))k/$((size / 1000))k)"
     line="$line | $ctx"
 fi
+[ -n "$five_hour_pct" ] && line="$line | 5h ${five_hour_pct}%"
+[ -n "$week_pct" ] && line="$line | week ${week_pct}%"
 printf '%s\n' "$line"
 STATUSLINE
 install -m 0755 -o dev -g dev "$tmp" "$statusline"

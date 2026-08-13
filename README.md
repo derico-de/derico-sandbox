@@ -408,8 +408,9 @@ The build installs:
 - Claude Code, pi (plus subagents/Impeccable/sideshow), and Mistral Vibe
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 - a default Claude Code status line (model, directory, branch, context-window
-  usage), installed next to settings.json at boot; a statusLine you configure
-  yourself is left alone
+  usage, and five-hour/weekly plan-limit percentages), installed next to
+  settings.json at boot; plan limits appear for Claude.ai subscribers after the
+  first API response, and a statusLine you configure yourself is left alone
 
 Rebuild the alias after changing anything under `guest/`:
 
