@@ -30,15 +30,43 @@ else
     mode=project-local
 fi
 
+# The status line lives next to settings.json: in shared mode both are on the
+# shared volume, so every sandbox sees the same script at the same path.
+statusline="$(dirname "$settings")/statusline.sh"
+tmp="$(mktemp)"
+cat > "$tmp" <<'STATUSLINE'
+#!/bin/sh
+# Claude Code status line: model, directory, git branch, context-window usage.
+input=$(cat)
+field() { printf '%s' "$input" | jq -r "$1"; }
+model=$(field '.model.display_name // "Claude"')
+current_dir=$(field '.workspace.current_dir // "."')
+branch=$(git -C "$current_dir" branch --show-current 2>/dev/null || true)
+pct=$(field '.context_window.used_percentage // empty' | cut -d. -f1)
+used=$(field '.context_window.total_input_tokens // empty')
+size=$(field '.context_window.context_window_size // empty')
+line="[$model] $(basename "$current_dir")"
+[ -n "$branch" ] && line="$line ($branch)"
+if [ -n "$pct" ]; then
+    ctx="ctx ${pct}%"
+    [ -n "$used" ] && [ -n "$size" ] && ctx="$ctx ($((used / 1000))k/$((size / 1000))k)"
+    line="$line | $ctx"
+fi
+printf '%s\n' "$line"
+STATUSLINE
+install -m 0755 -o dev -g dev "$tmp" "$statusline"
+
 # Claude's in-tool sandbox and permission prompts are intentionally disabled:
 # the hardware VM and host-enforced network ACL are the security boundary.
-tmp="$(mktemp)"
+# The status line is a default, not policy: an existing statusLine wins.
+existing='{}'
 if [ -f "$settings" ] && jq empty "$settings" >/dev/null 2>&1; then
-    jq '.sandbox={"enabled":false,"failIfUnavailable":false}
-        | .permissions.defaultMode="bypassPermissions"' "$settings" > "$tmp"
-else
-    printf '%s\n' '{"sandbox":{"enabled":false,"failIfUnavailable":false},"permissions":{"defaultMode":"bypassPermissions"}}' > "$tmp"
+    existing="$(cat "$settings")"
 fi
+printf '%s' "$existing" | jq --arg statusline "$statusline" '
+    .sandbox={"enabled":false,"failIfUnavailable":false}
+    | .permissions.defaultMode="bypassPermissions"
+    | .statusLine //= {"type":"command","command":$statusline}' > "$tmp"
 install -m 0600 -o dev -g dev "$tmp" "$settings"
 rm -f "$tmp"
 
