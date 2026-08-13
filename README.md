@@ -373,7 +373,7 @@ The build installs:
 - Docker Engine, BuildKit, and Compose v2
 - Git, curl, jq, ripgrep, fd, build-essential, PostgreSQL client, Vim/Neovim
 - Node.js 24 and pnpm
-- Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli
+- Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli 7.0.0b14 or newer
 - Claude Code, pi (plus subagents/Impeccable/sideshow), and Mistral Vibe
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 - a default Claude Code status line (model, directory, branch, context-window
