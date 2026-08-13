@@ -335,10 +335,13 @@ read-only mounts mean the guest can use but never modify host skills. The
 mounts are captured when the VM is created, so run `sandboxsh recreate` after
 adding the first skill on a host that had none.
 
-Changes to mounts, image, resources, or `agent_credentials` are immutable for an
+Changes to image, resources, or `agent_credentials` are immutable for an
 existing VM. `sandboxsh up` detects their fingerprint and requires
-`sandboxsh recreate`. Firewall destinations and declared ports are updated by
-`refresh-firewall` or the next `up`; `workdir` changes affect the next shell.
+`sandboxsh recreate`. Mount changes are applied by the next `up` — external
+mounts still require host approval first — hotplugging into a running VM
+without touching its disk. Firewall destinations and declared ports are updated
+by `refresh-firewall` or the next `up`; `workdir` changes affect the next
+shell.
 
 ## Golden image contents
 

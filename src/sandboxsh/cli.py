@@ -223,6 +223,7 @@ def _up(context: Context, *, enter_shell: bool) -> None:
     _verify_and_approve(context, config)
     if context.incus.exists(config.instance_name):
         context.incus.assert_immutable_config(config)
+        attached, removed = context.incus.sync_mounts(config)
         # Tighten changed authority before a persistent guest's startup services
         # can run under stale ACL rules.
         policy = context.incus.apply_acl(config)
@@ -230,6 +231,11 @@ def _up(context: Context, *, enter_shell: bool) -> None:
         context.incus.attach_acl(config)
         context.incus.start(config)
         context.incus.pin_allowlist(policy, instance=config.instance_name)
+        for target in attached:
+            context.incus.wait_for_mount(config.instance_name, target)
+            click.echo(f"mounted: {target}", err=True)
+        for target in removed:
+            click.echo(f"unmounted: {target}", err=True)
         click.echo(f"Attached to persistent VM {config.instance_name}.", err=True)
     else:
         click.echo(f"Creating persistent VM {config.instance_name}...", err=True)

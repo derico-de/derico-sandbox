@@ -38,6 +38,37 @@ def test_instance_name_replaces_dots_from_directory_name(tmp_path: Path) -> None
     assert "." not in config.instance_name
 
 
+def test_mount_changes_leave_the_immutable_fingerprint_alone(tmp_path: Path) -> None:
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    path = write_config(tmp_path, {"name": "demo", "dirs": ["."]})
+    before = load_config(path)
+
+    write_config(tmp_path, {"name": "demo", "dirs": [".", {"path": "extra", "target": "/extra"}]})
+    after = load_config(path)
+
+    assert after.immutable_fingerprint == before.immutable_fingerprint
+
+
+def test_legacy_fingerprint_depends_on_the_supplied_mount_rows(tmp_path: Path) -> None:
+    path = write_config(tmp_path, {"name": "demo", "dirs": ["."]})
+    config = load_config(path)
+    rows = [(str(mount.source), mount.target, mount.readonly) for mount in config.mounts]
+
+    assert config.legacy_immutable_fingerprint(rows) != config.immutable_fingerprint
+    assert config.legacy_immutable_fingerprint(rows) != config.legacy_immutable_fingerprint([])
+
+
+def test_resource_changes_still_move_the_immutable_fingerprint(tmp_path: Path) -> None:
+    path = write_config(tmp_path, {"name": "demo", "dirs": ["."]})
+    before = load_config(path)
+
+    write_config(tmp_path, {"name": "demo", "dirs": ["."], "resources": {"memory": "16GiB"}})
+    after = load_config(path)
+
+    assert after.immutable_fingerprint != before.immutable_fingerprint
+
+
 def test_external_and_readonly_mounts_are_resolved(tmp_path: Path) -> None:
     project = tmp_path / "project"
     reference = tmp_path / "reference"

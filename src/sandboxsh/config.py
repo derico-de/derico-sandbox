@@ -5,6 +5,7 @@ import ipaddress
 import json
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -146,11 +147,12 @@ class ProjectConfig:
         label = sanitize_name(self.path.parent.name).replace(".", "-").strip("-")
         return f"ss-{label}-{digest}"[:63]
 
-    @property
-    def immutable_fingerprint(self) -> str:
-        document = {
+    def _immutable_document(self) -> dict[str, Any]:
+        # Mounts are absent on purpose: they sync onto the existing VM under
+        # the same host approval as at create time, so changing them must not
+        # cost the VM-local disk.
+        return {
             "image": self.image,
-            "mounts": [[str(mount.source), mount.target, mount.readonly] for mount in self.mounts],
             "resources": {
                 "cpus": self.resources.cpus,
                 "memory": self.resources.memory,
@@ -158,12 +160,30 @@ class ProjectConfig:
             },
             "agent_credentials": self.agent_credentials,
         }
-        serialized = json.dumps(document, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(serialized.encode()).hexdigest()
+
+    @property
+    def immutable_fingerprint(self) -> str:
+        return _fingerprint(self._immutable_document())
+
+    def legacy_immutable_fingerprint(self, mounts: Iterable[tuple[str, str, bool]]) -> str:
+        """The retired format that froze mounts, kept for in-place upgrade.
+
+        The caller supplies the mount rows the old fingerprint captured —
+        recovered from the VM's devices, not this config, because the config
+        may have changed since the VM was stamped.
+        """
+        document = self._immutable_document()
+        document["mounts"] = [[source, target, readonly] for source, target, readonly in mounts]
+        return _fingerprint(document)
 
     @property
     def acl_name(self) -> str:
         return f"acl-{self.instance_name}"[:63]
+
+
+def _fingerprint(document: dict[str, Any]) -> str:
+    serialized = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:

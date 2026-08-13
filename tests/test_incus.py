@@ -476,6 +476,154 @@ def test_guest_ip_is_none_before_the_bridge_address_is_leased(tmp_path: Path) ->
     assert Incus(runner).guest_ip(project) is None
 
 
+def instance_with_devices(instance: str, devices: dict) -> Result:
+    return Result(json.dumps([{"name": instance, "devices": devices}]), "", 0)
+
+
+def workspace_device(project, index: int = 0) -> dict:
+    mount = project.mounts[index]
+    return {"type": "disk", "source": str(mount.source), "path": mount.target}
+
+
+def test_sync_mounts_is_a_no_op_when_devices_already_match(tmp_path: Path) -> None:
+    project = config(tmp_path)
+    runner = FakeRunner(
+        [instance_with_devices(project.instance_name, {"workspace-0": workspace_device(project)})]
+    )
+
+    attached, removed = Incus(runner).sync_mounts(project)
+
+    assert attached == () and removed == ()
+    assert len(runner.commands) == 1  # only the instance lookup
+
+
+def test_sync_mounts_attaches_new_and_drops_stale_devices(tmp_path: Path) -> None:
+    project = config(tmp_path)
+    stale = {"type": "disk", "source": "/somewhere/else", "path": "/gone"}
+    runner = FakeRunner([instance_with_devices(project.instance_name, {"workspace-7": stale})])
+
+    attached, removed = Incus(runner).sync_mounts(project)
+
+    assert attached == (project.mounts[0].target,)
+    assert removed == ("/gone",)
+    operations = [command[4:] for command, _ in runner.commands[1:]]
+    assert operations[0][:4] == ["config", "device", "remove", project.instance_name]
+    assert operations[1][:6] == [
+        "config",
+        "device",
+        "add",
+        project.instance_name,
+        "workspace-0",
+        "disk",
+    ]
+    assert f"source={project.mounts[0].source}" in operations[1]
+    assert f"path={project.mounts[0].target}" in operations[1]
+
+
+def test_sync_mounts_replaces_a_device_whose_definition_changed(tmp_path: Path) -> None:
+    project = config(tmp_path)
+    readonly_now = {**workspace_device(project), "readonly": "true"}
+    runner = FakeRunner(
+        [instance_with_devices(project.instance_name, {"workspace-0": readonly_now})]
+    )
+
+    attached, removed = Incus(runner).sync_mounts(project)
+
+    assert attached == (project.mounts[0].target,)
+    assert removed == ()
+    operations = [command[4:7] for command, _ in runner.commands[1:]]
+    assert operations == [
+        ["config", "device", "remove"],
+        ["config", "device", "add"],
+    ]
+
+
+def test_sync_mounts_surfaces_a_failed_device_change_with_a_remedy(tmp_path: Path) -> None:
+    project = config(tmp_path)
+    runner = FakeRunner(
+        [
+            instance_with_devices(project.instance_name, {}),
+            Result("", "Error: device busy", 1),
+        ]
+    )
+
+    try:
+        Incus(runner).sync_mounts(project)
+    except SandboxshError as exc:
+        assert "device busy" in str(exc)
+        assert "sandboxsh down" in str(exc)
+    else:
+        raise AssertionError("failed device change was silently ignored")
+
+
+def legacy_rows(project) -> list[tuple[str, str, bool]]:
+    return [(str(mount.source), mount.target, mount.readonly) for mount in project.mounts]
+
+
+def test_assert_immutable_config_upgrades_a_legacy_fingerprint_in_place(tmp_path: Path) -> None:
+    project = config(tmp_path)
+    stamped = project.legacy_immutable_fingerprint(legacy_rows(project))
+    runner = FakeRunner(
+        [
+            Result(f"{stamped}\n", "", 0),
+            instance_with_devices(
+                project.instance_name, {"workspace-0": workspace_device(project)}
+            ),
+        ]
+    )
+
+    Incus(runner).assert_immutable_config(project)
+
+    update = runner.commands[2][0]
+    assert update[4:7] == ["config", "set", project.instance_name]
+    assert update[7] == f"user.sandboxsh.immutable={project.immutable_fingerprint}"
+
+
+def test_legacy_upgrade_survives_mounts_changed_before_the_update(tmp_path: Path) -> None:
+    # The stamp froze the OLD mount list; the config has since grown a mount.
+    # The VM's devices still describe the old list, so the upgrade must match.
+    project = config(tmp_path)
+    old_rows = legacy_rows(project) + [("/somewhere/else", "/gone", True)]
+    stamped = project.legacy_immutable_fingerprint(old_rows)
+    devices = {
+        "workspace-0": workspace_device(project),
+        "workspace-1": {
+            "type": "disk",
+            "source": "/somewhere/else",
+            "path": "/gone",
+            "readonly": "true",
+        },
+    }
+    runner = FakeRunner(
+        [
+            Result(f"{stamped}\n", "", 0),
+            instance_with_devices(project.instance_name, devices),
+        ]
+    )
+
+    Incus(runner).assert_immutable_config(project)
+
+    update = runner.commands[2][0]
+    assert update[7] == f"user.sandboxsh.immutable={project.immutable_fingerprint}"
+
+
+def test_assert_immutable_config_still_rejects_changed_resources(tmp_path: Path) -> None:
+    project = config(tmp_path)
+    runner = FakeRunner(
+        [
+            Result("something-else\n", "", 0),
+            instance_with_devices(project.instance_name, {}),
+        ]
+    )
+
+    try:
+        Incus(runner).assert_immutable_config(project)
+    except SandboxshError as exc:
+        assert "recreate" in str(exc)
+    else:
+        raise AssertionError("a changed immutable fingerprint was accepted")
+
+
 def test_host_skill_sources_collects_each_existing_agent_directory(
     tmp_path: Path, monkeypatch
 ) -> None:

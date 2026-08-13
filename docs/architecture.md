@@ -88,7 +88,9 @@ On first `up`, sandboxsh:
 
 `down` stops but preserves the root disk. `destroy` removes it. `recreate`
 removes and rebuilds it while leaving the host checkout and shared agent volume
-intact.
+intact. On an existing VM, `up` re-runs the approval gate and syncs workspace
+mounts to the approved configuration, so mount changes never require
+`recreate`; image, resource, and `agent_credentials` changes still do.
 
 ## Network policy
 

@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from .config import FirewallEntry, ProjectConfig, Resources
+from .config import FirewallEntry, Mount, ProjectConfig, Resources
 from .errors import SandboxshError
 from .process import Result, Runner
 from .security import AclPolicy, build_acl_policy
@@ -30,6 +30,8 @@ HOST_SKILLS_TARGET = "/opt/sandboxsh/host-skills"
 # fixed the start-time lookup in 6.0.6 (LTS) and 6.22.0.
 ACL_PROJECT_FIX_LTS = (6, 0, 6)
 ACL_PROJECT_FIX_FEATURE = (6, 22, 0)
+
+WORKSPACE_DEVICE_PREFIX = "workspace-"
 
 PIN_BEGIN = "# BEGIN sandboxsh allowlist"
 PIN_END = "# END sandboxsh allowlist"
@@ -278,11 +280,110 @@ class Incus:
             check=False,
         )
         actual = result.stdout.strip() if result.returncode == 0 else ""
-        if actual != config.immutable_fingerprint:
-            raise SandboxshError(
-                "mount, image, resource, or agent-credential settings changed; "
-                "run `sandboxsh recreate` to apply immutable VM configuration"
+        if actual == config.immutable_fingerprint:
+            return
+        if actual and actual == self._legacy_fingerprint(config):
+            # Stamped before mounts became mutable; upgrade in place so the VM
+            # does not demand a recreate over a format change.
+            self.command(
+                "config",
+                "set",
+                config.instance_name,
+                f"user.sandboxsh.immutable={config.immutable_fingerprint}",
             )
+            return
+        raise SandboxshError(
+            "image, resource, or agent-credential settings changed; "
+            "run `sandboxsh recreate` to apply immutable VM configuration"
+        )
+
+    def _legacy_fingerprint(self, config: ProjectConfig) -> str:
+        """The mount-inclusive fingerprint this VM would have been stamped with.
+
+        The mount rows come from the VM's own workspace devices, which are
+        exactly what the retired format froze, so the upgrade succeeds even
+        when .sandboxsh.json has changed its mounts since the stamp.
+        """
+        record = self._instance_record(config.instance_name)
+        indexed = []
+        for name, device in ((record or {}).get("devices") or {}).items():
+            suffix = name.removeprefix(WORKSPACE_DEVICE_PREFIX)
+            if name == suffix or not suffix.isdigit():
+                continue
+            indexed.append((int(suffix), device))
+        mounts = [
+            (device.get("source", ""), device.get("path", ""), device.get("readonly") == "true")
+            for _, device in sorted(indexed)
+        ]
+        return config.legacy_immutable_fingerprint(mounts)
+
+    @staticmethod
+    def _mount_device(mount: Mount) -> dict[str, str]:
+        device = {"type": "disk", "source": str(mount.source), "path": mount.target}
+        if mount.readonly:
+            device["readonly"] = "true"
+        return device
+
+    @staticmethod
+    def _device_args(device: dict[str, str]) -> list[str]:
+        return [f"{key}={value}" for key, value in device.items() if key != "type"]
+
+    @staticmethod
+    def _same_disk(current: dict, wanted: dict[str, str]) -> bool:
+        return (
+            current.get("source") == wanted["source"]
+            and current.get("path") == wanted["path"]
+            and (current.get("readonly") == "true") == (wanted.get("readonly") == "true")
+        )
+
+    def _device_command(self, instance: str, action: str, name: str, *args: str) -> None:
+        result = self.command("config", "device", action, instance, name, *args, check=False)
+        if result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "unknown Incus error"
+            raise SandboxshError(
+                f"could not {action} device {name} on {instance}: {detail}; "
+                "if the change cannot apply live, run `sandboxsh down` and retry"
+            )
+
+    def sync_mounts(self, config: ProjectConfig) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Bring workspace disk devices in line with the approved configuration.
+
+        Mounts are not part of the immutable fingerprint: they hotplug into a
+        running VM and apply at boot for a stopped one, so a changed directory
+        list never costs the VM-local disk. The caller has already passed the
+        host-approval gate that vetted these mounts.
+
+        Returns the guest paths that were (re)attached and those removed.
+        """
+        record = self._instance_record(config.instance_name)
+        if record is None:
+            raise SandboxshError(f"instance disappeared: {config.instance_name}")
+        existing = {
+            name: device
+            for name, device in (record.get("devices") or {}).items()
+            if name.startswith(WORKSPACE_DEVICE_PREFIX)
+        }
+        desired = {
+            f"{WORKSPACE_DEVICE_PREFIX}{index}": self._mount_device(mount)
+            for index, mount in enumerate(config.mounts)
+        }
+
+        removed = []
+        for name in sorted(set(existing) - set(desired)):
+            self._device_command(config.instance_name, "remove", name)
+            removed.append(existing[name].get("path", name))
+        attached = []
+        for name, device in desired.items():
+            current = existing.get(name)
+            if current is not None and self._same_disk(current, device):
+                continue
+            if current is not None:
+                self._device_command(config.instance_name, "remove", name)
+            self._device_command(
+                config.instance_name, "add", name, "disk", *self._device_args(device)
+            )
+            attached.append(device["path"])
+        return tuple(attached), tuple(removed)
 
     def instance_status(self, instance: str) -> str | None:
         record = self._instance_record(instance)
@@ -518,19 +619,15 @@ class Incus:
 
         try:
             for index, mount in enumerate(config.mounts):
-                args = [
+                self.command(
                     "config",
                     "device",
                     "add",
                     config.instance_name,
-                    f"workspace-{index}",
+                    f"{WORKSPACE_DEVICE_PREFIX}{index}",
                     "disk",
-                    f"source={mount.source}",
-                    f"path={mount.target}",
-                ]
-                if mount.readonly:
-                    args.append("readonly=true")
-                self.command(*args)
+                    *self._device_args(self._mount_device(mount)),
+                )
 
             # Host-level agent skills are shared read-only; the guest links
             # them into each agent's configuration during instance init. Never
