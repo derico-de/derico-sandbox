@@ -104,6 +104,9 @@ cat > /etc/profile.d/sandboxsh.sh <<'PROFILE'
 export SANDBOXSH=1
 export DEVCONTAINER=true
 export PATH="$HOME/.local/bin:$PATH"
+# pnpm 11 stores a SQLite index beside its package content. Keep it off the
+# virtiofs/9p project mount, where SQLite WAL/mmap may fail with SQLITE_IOERR.
+export PNPM_CONFIG_STORE_DIR="$HOME/.local/share/pnpm/store"
 if [ -d /agent-creds/claude ]; then
     export CLAUDE_CONFIG_DIR=/agent-creds/claude
 fi

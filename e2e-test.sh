@@ -34,6 +34,14 @@ services:
     volumes:
       - .:/workspace
 EOF
+cat > "$WORK/package.json" <<'EOF'
+{
+  "private": true,
+  "dependencies": {
+    "is-number": "7.0.0"
+  }
+}
+EOF
 
 pass() { printf 'PASS %s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
@@ -48,6 +56,16 @@ INSTANCE="$(jq -r .instance <<<"$PLAN")"
 
 "$SANDBOXSH" --config "$CONFIG" exec -- docker compose version >/dev/null
 pass "Docker Compose v2 works"
+
+PNPM_STORE="$($SANDBOXSH --config "$CONFIG" exec -- pnpm store path)"
+case "$PNPM_STORE" in
+    /home/dev/.local/share/pnpm/store/*) ;;
+    *) fail "pnpm store is not VM-local: $PNPM_STORE" ;;
+esac
+"$SANDBOXSH" --config "$CONFIG" exec -- pnpm install --reporter=silent
+"$SANDBOXSH" --config "$CONFIG" exec -- pnpm exec node -e \
+    'if (!require("is-number")(42)) process.exit(1)'
+pass "pnpm installs from a SQLite store on the VM-local disk"
 
 "$SANDBOXSH" --config "$CONFIG" exec -- docker compose up -d
 for _ in $(seq 1 30); do

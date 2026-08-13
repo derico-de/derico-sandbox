@@ -33,6 +33,12 @@ ACL_PROJECT_FIX_FEATURE = (6, 22, 0)
 
 WORKSPACE_DEVICE_PREFIX = "workspace-"
 
+# pnpm 11 keeps a SQLite index in its package store. Host project mounts use
+# virtiofs/9p, whose locking/mmap semantics can make that index fail with
+# SQLITE_IOERR, so keep the store on the VM's local filesystem.
+PNPM_STORE_DIR = "/home/dev/.local/share/pnpm/store"
+PNPM_STORE_ENV = f"PNPM_CONFIG_STORE_DIR={PNPM_STORE_DIR}"
+
 # Herdr sees the host-side `incus exec` wrapper rather than processes inside the
 # VM. Its documented wrapper hint lets it apply the right screen manifest to the
 # terminal stream without exposing Herdr's host control socket to guest root.
@@ -827,6 +833,8 @@ class Incus:
             "-u",
             "dev",
             "--",
+            "env",
+            PNPM_STORE_ENV,
             "bash",
             "-lc",
             f"cd {workdir} && exec bash -l",
@@ -865,6 +873,8 @@ class Incus:
             "-u",
             "dev",
             "--",
+            "env",
+            PNPM_STORE_ENV,
             "bash",
             "-lc",
             script,

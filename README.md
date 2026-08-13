@@ -196,6 +196,10 @@ sandboxsh agent pi -- --session /path/to/session.jsonl
   read-write requires a new approval.
 - The restricted Incus user service allows host-path devices only below the host
   user's home directory by default.
+- Host-path mounts use virtiofs or 9p, which are unsuitable for some SQLite WAL
+  workloads. pnpm's SQLite-backed package store is therefore kept on the VM-local
+  disk at `~/.local/share/pnpm/store`; project files and `node_modules` remain in
+  the live host checkout.
 
 ### Network
 

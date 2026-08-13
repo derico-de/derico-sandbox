@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from sandboxsh.cli import cli
 from sandboxsh.config import load_config
-from sandboxsh.incus import Incus
+from sandboxsh.incus import PNPM_STORE_DIR, Incus
 from sandboxsh.process import Result
 
 
@@ -134,6 +134,16 @@ def test_update_reinstalls_requested_github_revision(
     assert "Updated sandboxsh from" in result.output
 
 
+def test_guest_shell_keeps_pnpm_store_off_host_mount(tmp_path: Path) -> None:
+    path = tmp_path / ".sandboxsh.json"
+    path.write_text(json.dumps({"name": "demo", "dirs": ["."]}))
+    config = load_config(path)
+
+    argv = Incus().shell_argv(config)
+
+    assert f"PNPM_CONFIG_STORE_DIR={PNPM_STORE_DIR}" in argv
+
+
 @pytest.mark.parametrize("agent", ("claude", "pi"))
 def test_guest_agent_exec_sets_the_host_visible_herdr_hint(monkeypatch, agent: str) -> None:
     monkeypatch.setenv("HERDR_AGENT", "stale-global-value")
@@ -178,6 +188,7 @@ def test_guest_exec_uses_dev_identity_and_configured_workdir(tmp_path: Path) -> 
     ]
     assert "runuser" in argv
     assert "dev" in argv
+    assert f"PNPM_CONFIG_STORE_DIR={PNPM_STORE_DIR}" in argv
     assert argv[-4:] == ["/workspaces/custom", "docker", "compose", "ps"]
 
 
