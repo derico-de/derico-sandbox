@@ -10,8 +10,8 @@ from pathlib import Path
 
 import click
 
-from .config import FirewallEntry, Mount, PortMapping, ProjectConfig
-from .errors import SandboxshError
+from .config import FirewallEntry, Mount, PortMapping, ProjectConfig, parse_firewall_entry
+from .errors import ConfigError, SandboxshError
 
 # These endpoints are part of the trusted base policy. Project configuration can
 # add endpoints, but additions require approval stored outside the mounted repo.
@@ -47,6 +47,37 @@ DEFAULT_ENDPOINTS: tuple[FirewallEntry, ...] = (
 
 def state_home() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sandboxsh"
+
+
+def _endpoints_path() -> Path:
+    return state_home() / "endpoints.json"
+
+
+def host_endpoints() -> tuple[FirewallEntry, ...]:
+    """Host-wide endpoints every sandbox may reach, e.g. tailnet services.
+
+    The file lives outside every mounted project, so like DEFAULT_ENDPOINTS it
+    is trusted host policy and needs no per-project approval. Entries use the
+    same shape as firewall.allow in .sandboxsh.json.
+    """
+    path = _endpoints_path()
+    if not path.exists():
+        return ()
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SandboxshError(f"cannot read host endpoints {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise SandboxshError(f"unsupported host endpoints format: {path}")
+    allow = data.get("allow", [])
+    if not isinstance(allow, list):
+        raise SandboxshError(f'"allow" must be an array in {path}')
+    try:
+        return tuple(
+            parse_firewall_entry(value, index, "allow") for index, value in enumerate(allow)
+        )
+    except ConfigError as exc:
+        raise SandboxshError(f"invalid host endpoint in {path}: {exc}") from exc
 
 
 def _approval_path() -> Path:
@@ -413,13 +444,15 @@ def build_acl_policy(
     grouped: dict[tuple[str, tuple[int, ...]], set[str]] = defaultdict(set)
     resolutions: dict[str, tuple[str, ...]] = {}
     unresolved_defaults = []
-    for entry in DEFAULT_ENDPOINTS:
+    for entry in (*DEFAULT_ENDPOINTS, *host_endpoints()):
         try:
             addresses = resolve_host(entry.host)
         except SandboxshError:
-            # Omitting an unavailable built-in endpoint keeps the ACL fail-closed.
-            # Explicit project endpoints remain strict below because the user asked
-            # for those destinations and may depend on them.
+            # Omitting an unavailable built-in or host-wide endpoint keeps the
+            # ACL fail-closed without blocking every `up` on the machine (a
+            # tailnet name resolves only while tailscale is up). Explicit
+            # project endpoints remain strict below because the user asked for
+            # those destinations and may depend on them.
             unresolved_defaults.append(entry.host)
             continue
         for address in addresses:

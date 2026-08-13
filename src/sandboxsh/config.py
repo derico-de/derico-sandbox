@@ -332,34 +332,31 @@ def _parse_mounts(data: dict[str, Any], root: Path) -> tuple[Mount, ...]:
     return tuple(mounts)
 
 
-def _parse_firewall_entry(value: Any, index: int) -> FirewallEntry:
+def parse_firewall_entry(value: Any, index: int, context: str = "firewall.allow") -> FirewallEntry:
+    label = f"{context}[{index}]"
     if isinstance(value, str):
         host = value
         ports: Any = [443]
         protocol = "tcp"
         allow_private = False
     elif isinstance(value, dict):
-        _reject_unknown(
-            value,
-            {"host", "ports", "protocol", "allow_private"},
-            f"firewall.allow[{index}]",
-        )
+        _reject_unknown(value, {"host", "ports", "protocol", "allow_private"}, label)
         host = value.get("host")
         ports = value.get("ports", [443])
         protocol = value.get("protocol", "tcp")
         allow_private = value.get("allow_private", False)
     else:
-        raise ConfigError(f"firewall.allow[{index}] must be a hostname string or object")
+        raise ConfigError(f"{label} must be a hostname string or object")
     if not isinstance(host, str) or not host.strip():
-        raise ConfigError(f"firewall.allow[{index}].host must be a non-empty string")
-    _safe_text(host, f"firewall.allow[{index}].host")
+        raise ConfigError(f"{label}.host must be a non-empty string")
+    _safe_text(host, f"{label}.host")
     if protocol not in {"tcp", "udp"}:
-        raise ConfigError(f"firewall.allow[{index}].protocol must be tcp or udp")
+        raise ConfigError(f"{label}.protocol must be tcp or udp")
     if not isinstance(allow_private, bool):
-        raise ConfigError(f"firewall.allow[{index}].allow_private must be true or false")
+        raise ConfigError(f"{label}.allow_private must be true or false")
     if not isinstance(ports, list) or not ports:
-        raise ConfigError(f"firewall.allow[{index}].ports must be a non-empty array")
-    parsed_ports = {_parse_port(port, f"firewall.allow[{index}].ports") for port in ports}
+        raise ConfigError(f"{label}.ports must be a non-empty array")
+    parsed_ports = {_parse_port(port, f"{label}.ports") for port in ports}
     return FirewallEntry(
         host=host.strip(),
         ports=tuple(sorted(parsed_ports)),
@@ -423,7 +420,7 @@ def load_config(path: Path | None = None) -> ProjectConfig:
     allow_value = firewall.get("allow", [])
     if not isinstance(allow_value, list):
         raise ConfigError("firewall.allow must be an array")
-    allow = tuple(_parse_firewall_entry(value, index) for index, value in enumerate(allow_value))
+    allow = tuple(parse_firewall_entry(value, index) for index, value in enumerate(allow_value))
 
     if "resources" in data and "limits" in data:
         raise ConfigError('use either "resources" or legacy "limits", not both')

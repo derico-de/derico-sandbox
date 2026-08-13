@@ -43,6 +43,75 @@ def test_acl_is_default_deny_with_only_resolved_destinations(
     assert policy.document["ingress"][0]["destination_port"] == "3000"
 
 
+def write_host_endpoints(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, document) -> None:
+    home = tmp_path / "xdg-config" / "sandboxsh"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "endpoints.json").write_text(json.dumps(document))
+
+
+def test_host_endpoints_apply_to_every_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = project_config(tmp_path)
+    write_host_endpoints(
+        monkeypatch,
+        tmp_path,
+        {
+            "version": 1,
+            "allow": [{"host": "planetmobile", "ports": [8228], "allow_private": True}],
+        },
+    )
+    monkeypatch.setattr(security, "DEFAULT_ENDPOINTS", ())
+    monkeypatch.setattr(security, "resolve_host", lambda host: ("100.101.102.103",))
+
+    policy = security.build_acl_policy(config)
+
+    assert policy.resolutions == {"planetmobile": ("100.101.102.103",)}
+    assert policy.document["egress"] == [
+        {
+            "action": "allow",
+            "state": "enabled",
+            "description": "sandboxsh resolved allowlist",
+            "destination": "100.101.102.103",
+            "protocol": "tcp",
+            "destination_port": "8228",
+        }
+    ]
+
+
+def test_host_endpoints_are_absent_by_default(tmp_path: Path) -> None:
+    assert security.host_endpoints() == ()
+
+
+def test_unresolvable_host_endpoint_is_omitted_like_a_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tailnet name resolves only while tailscale is up; its absence must not
+    # block every `sandboxsh up` on the machine.
+    config = project_config(tmp_path)
+    write_host_endpoints(monkeypatch, tmp_path, {"version": 1, "allow": ["planetmobile"]})
+    monkeypatch.setattr(security, "DEFAULT_ENDPOINTS", ())
+
+    def resolve(host: str) -> tuple[str, ...]:
+        raise SandboxshError(f"cannot resolve allowlisted host {host}")
+
+    monkeypatch.setattr(security, "resolve_host", resolve)
+
+    policy = security.build_acl_policy(config)
+
+    assert policy.unresolved_defaults == ("planetmobile",)
+    assert policy.document["egress"] == []
+
+
+def test_invalid_host_endpoints_file_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_host_endpoints(monkeypatch, tmp_path, {"version": 1, "allow": [{"ports": [1]}]})
+
+    with pytest.raises(SandboxshError, match="allow\\[0\\]"):
+        security.host_endpoints()
+
+
 def test_unresolvable_default_endpoint_is_omitted_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

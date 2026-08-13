@@ -195,6 +195,29 @@ project-added endpoint remains an error.
 `firewall.enabled=false` is rejected unless the trusted host shell explicitly
 sets `SANDBOXSH_ALLOW_OPEN_NETWORK=1`.
 
+### Host-wide endpoints
+
+Endpoints every sandbox on this host may reach — a tailnet service, an internal
+registry — go in `~/.config/sandboxsh/endpoints.json`. The file lives outside
+every mounted project, so like the built-in allowlist it is trusted host policy
+and needs no per-project approval. Entries use the same shape as
+`firewall.allow`:
+
+```json
+{
+  "version": 1,
+  "allow": [
+    {"host": "planetmobile", "ports": [8228], "allow_private": true}
+  ]
+}
+```
+
+Tailnet names resolve to CGNAT (100.64.0.0/10) addresses, so they need
+`"allow_private": true`. Like a built-in endpoint, a host-wide endpoint that is
+temporarily unresolvable (e.g. tailscale is down) is omitted fail-closed and
+reported rather than blocking `up`. Existing sandboxes pick the change up on
+the next `sandboxsh up` or `sandboxsh refresh-firewall`.
+
 If Docker or podman also runs on the host, it sets the IPv4 `FORWARD` policy to
 `DROP` and accepts only its own bridges. VM traffic is routed off the Incus bridge
 and crosses that hook, so every allowlisted endpoint blackholes while host-side
