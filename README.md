@@ -104,6 +104,8 @@ sandboxsh                   # same as `sandboxsh up`: create/start and enter
 sandboxsh up                # explicit form
 sandboxsh shell             # enter an already-running VM
 sandboxsh exec -- docker compose up -d
+sandboxsh agent pi          # create/start and launch Pi directly
+sandboxsh agent claude      # create/start and launch Claude Code directly
 sandboxsh status
 sandboxsh down              # stop; preserve disk and VM-local credentials
 sandboxsh recreate          # replace VM-local disk from golden image
@@ -118,6 +120,35 @@ docker compose up -d
 claude
 pi
 vibe
+```
+
+### Herdr agent status
+
+A VM hides its guest process tree from the host: Herdr sees the host-side
+`incus exec` wrapper, not the `pi` or `claude` process inside it. Launch either
+agent directly when the sandbox runs in a Herdr pane:
+
+```bash
+sandboxsh agent pi
+sandboxsh agent claude
+```
+
+The command creates or starts the VM, launches the selected agent, and sets
+Herdr's documented `HERDR_AGENT` hint only on the host-visible Incus process.
+`sandboxsh exec -- pi` and `sandboxsh exec -- claude` also set the hint
+automatically when the VM is already running. This lets Herdr apply its normal
+Pi or Claude screen detection without exposing Herdr's control socket to guest
+root.
+
+Starting an agent after entering a generic `sandboxsh` shell cannot update that
+hint: the already-running host wrapper cannot have its environment changed by a
+process inside the VM. Use `sandboxsh agent ...` for panes whose agent status
+Herdr should track.
+
+Pass agent options after `--`, for example:
+
+```bash
+sandboxsh agent pi -- --session /path/to/session.jsonl
 ```
 
 ## Configuration

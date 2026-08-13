@@ -28,7 +28,17 @@ def test_init_writes_secure_defaults(tmp_path: Path) -> None:
 def test_help_exposes_expected_lifecycle() -> None:
     result = CliRunner().invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for command in ("init", "up", "down", "recreate", "destroy", "exec", "image", "update"):
+    for command in (
+        "init",
+        "up",
+        "down",
+        "recreate",
+        "destroy",
+        "exec",
+        "agent",
+        "image",
+        "update",
+    ):
         assert command in result.output
 
 
@@ -122,6 +132,25 @@ def test_update_reinstalls_requested_github_revision(
         )
     ]
     assert "Updated sandboxsh from" in result.output
+
+
+@pytest.mark.parametrize("agent", ("claude", "pi"))
+def test_guest_agent_exec_sets_the_host_visible_herdr_hint(monkeypatch, agent: str) -> None:
+    monkeypatch.setenv("HERDR_AGENT", "stale-global-value")
+    incus = Incus()
+
+    environment = incus.exec_environment((agent,))
+
+    assert environment["HERDR_AGENT"] == agent
+
+
+def test_ordinary_guest_exec_clears_a_stale_herdr_hint(monkeypatch) -> None:
+    monkeypatch.setenv("HERDR_AGENT", "pi")
+    incus = Incus()
+
+    environment = incus.exec_environment(("docker", "compose", "ps"))
+
+    assert "HERDR_AGENT" not in environment
 
 
 def test_guest_exec_uses_dev_identity_and_configured_workdir(tmp_path: Path) -> None:

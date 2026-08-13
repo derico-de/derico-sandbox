@@ -33,6 +33,11 @@ ACL_PROJECT_FIX_FEATURE = (6, 22, 0)
 
 WORKSPACE_DEVICE_PREFIX = "workspace-"
 
+# Herdr sees the host-side `incus exec` wrapper rather than processes inside the
+# VM. Its documented wrapper hint lets it apply the right screen manifest to the
+# terminal stream without exposing Herdr's host control socket to guest root.
+HERDR_AGENT_COMMANDS = frozenset({"claude", "pi"})
+
 PIN_BEGIN = "# BEGIN sandboxsh allowlist"
 PIN_END = "# END sandboxsh allowlist"
 
@@ -826,6 +831,23 @@ class Incus:
             "-lc",
             f"cd {workdir} && exec bash -l",
         ]
+
+    def exec_environment(self, command: tuple[str, ...]) -> dict[str, str]:
+        """Build the host wrapper environment for a guest command.
+
+        Agent processes are hidden behind `incus exec`, so Herdr cannot inspect
+        them directly. Tag known interactive agent launches on the host-visible
+        wrapper; all other commands retain the ordinary isolated Incus client
+        environment.
+        """
+        environment = dict(self.environment)
+        # Do not let a globally exported hint misclassify ordinary guest commands.
+        environment.pop("HERDR_AGENT", None)
+        if command:
+            agent = Path(command[0]).name
+            if agent in HERDR_AGENT_COMMANDS:
+                environment["HERDR_AGENT"] = agent
+        return environment
 
     def exec_argv(self, config: ProjectConfig, command: tuple[str, ...]) -> list[str]:
         if not command:

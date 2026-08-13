@@ -282,7 +282,26 @@ def exec_command(context: Context, command: tuple[str, ...]) -> None:
     context.incus.verify_host_access()
     if context.incus.instance_status(config.instance_name) != "Running":
         raise SandboxshError("VM is not running; use `sandboxsh up`")
-    context.runner.exec(context.incus.exec_argv(config, command), env=context.incus.environment)
+    context.runner.exec(
+        context.incus.exec_argv(config, command),
+        env=context.incus.exec_environment(command),
+    )
+
+
+@cli.command("agent", context_settings={"ignore_unknown_options": True})
+@click.argument("agent", type=click.Choice(("claude", "pi")))
+@click.argument("arguments", nargs=-1, type=click.UNPROCESSED)
+@click.pass_obj
+@handled
+def agent_command(context: Context, agent: str, arguments: tuple[str, ...]) -> None:
+    """Create/start the VM and run Claude or Pi with Herdr status detection."""
+    _up(context, enter_shell=False)
+    config = context.config()
+    command = (agent, *arguments)
+    context.runner.exec(
+        context.incus.exec_argv(config, command),
+        env=context.incus.exec_environment(command),
+    )
 
 
 @cli.command("down")
