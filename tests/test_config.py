@@ -27,6 +27,17 @@ def test_defaults_mount_project_and_generate_stable_instance_name(tmp_path: Path
     assert config.resources.disk == "40GiB"
 
 
+def test_instance_name_replaces_dots_from_directory_name(tmp_path: Path) -> None:
+    project = tmp_path / "derico.de"
+    project.mkdir()
+    path = write_config(project, {"name": "derico.de", "dirs": ["."]})
+
+    config = load_config(path)
+
+    assert config.instance_name.startswith("ss-derico-de-")
+    assert "." not in config.instance_name
+
+
 def test_external_and_readonly_mounts_are_resolved(tmp_path: Path) -> None:
     project = tmp_path / "project"
     reference = tmp_path / "reference"

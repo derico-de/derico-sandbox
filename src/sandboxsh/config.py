@@ -142,7 +142,8 @@ class ProjectConfig:
     def instance_name(self) -> str:
         # Do not let an agent-controlled name edit accumulate persistent VMs.
         digest = hashlib.sha256(str(self.path).encode()).hexdigest()[:8]
-        label = sanitize_name(self.path.parent.name)
+        # Incus instance names reject dots, which sanitize_name keeps.
+        label = sanitize_name(self.path.parent.name).replace(".", "-").strip("-")
         return f"ss-{label}-{digest}"[:63]
 
     @property
