@@ -10,6 +10,7 @@ from sandboxsh.incus import (
     PIN_END,
     Incus,
     acl_project_lookup_is_broken,
+    host_skill_sources,
     parse_server_version,
 )
 from sandboxsh.process import Result
@@ -473,3 +474,34 @@ def test_guest_ip_is_none_before_the_bridge_address_is_leased(tmp_path: Path) ->
     )
 
     assert Incus(runner).guest_ip(project) is None
+
+
+def test_host_skill_sources_collects_each_existing_agent_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    for relative in (".agents/skills", ".claude/skills", ".vibe/skills"):
+        (tmp_path / relative).mkdir(parents=True)
+
+    assert host_skill_sources() == (
+        ("agents", (tmp_path / ".agents/skills").resolve()),
+        ("claude", (tmp_path / ".claude/skills").resolve()),
+        ("vibe", (tmp_path / ".vibe/skills").resolve()),
+    )
+
+
+def test_host_skill_sources_follows_claude_config_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    skills = tmp_path / "claude-config" / "skills"
+    skills.mkdir(parents=True)
+
+    assert host_skill_sources() == (("claude", skills.resolve()),)
+
+
+def test_host_skill_sources_is_empty_without_skill_directories(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    assert host_skill_sources() == ()

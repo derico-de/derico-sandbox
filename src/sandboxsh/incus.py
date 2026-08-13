@@ -18,6 +18,10 @@ from .security import AclPolicy, build_acl_policy
 DEFAULT_POOL = os.environ.get("SANDBOXSH_STORAGE_POOL", "default")
 CREDS_VOLUME = "sandboxsh-agent-creds"
 
+# Guest mount point for the host's user-level agent skills. The guest-side
+# init links these into each agent's active configuration.
+HOST_SKILLS_TARGET = "/opt/sandboxsh/host-skills"
+
 # Older daemons validate a bridged NIC's `security.acls` against the network
 # project (`default`, because the user project has features.networks=false) but
 # look the same ACL up in the *instance* project while starting the NIC. The ACL
@@ -33,6 +37,22 @@ PIN_END = "# END sandboxsh allowlist"
 # Interfaces the guest creates for its own containers. They carry a global IPv4
 # that means nothing to the host, so they must never be taken for the VM address.
 GUEST_LOCAL_INTERFACES = ("docker", "br-", "veth", "virbr", "cni", "flannel")
+
+
+def host_skill_sources() -> tuple[tuple[str, Path], ...]:
+    """The host's user-level agent skill directories that exist.
+
+    Skills are instructions, not credentials, so sharing them read-only does
+    not widen the credential surface the way mounting all of ~/.claude or
+    ~/.vibe would. `~/.agents/skills` is the cross-agent standard location.
+    """
+    claude_config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    candidates = (
+        ("agents", Path.home() / ".agents" / "skills"),
+        ("claude", claude_config / "skills"),
+        ("vibe", Path.home() / ".vibe" / "skills"),
+    )
+    return tuple((name, path.resolve()) for name, path in candidates if path.is_dir())
 
 
 def parse_server_version(value: str) -> tuple[int, int, int] | None:
@@ -511,6 +531,22 @@ class Incus:
                 if mount.readonly:
                     args.append("readonly=true")
                 self.command(*args)
+
+            # Host-level agent skills are shared read-only; the guest links
+            # them into each agent's configuration during instance init. Never
+            # writable: the guest must not edit files in the host's home.
+            for source_name, skills in host_skill_sources():
+                self.command(
+                    "config",
+                    "device",
+                    "add",
+                    config.instance_name,
+                    f"host-skills-{source_name}",
+                    "disk",
+                    f"source={skills}",
+                    f"path={HOST_SKILLS_TARGET}/{source_name}",
+                    "readonly=true",
+                )
 
             if config.agent_credentials:
                 self.ensure_credentials_volume()

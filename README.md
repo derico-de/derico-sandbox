@@ -322,6 +322,19 @@ Set `"agent_credentials": false` for a project that must not see the shared
 agent volume; its agent state then stays VM-local while the same YOLO permission
 settings are applied.
 
+## Host agent skills
+
+User-level skills found on the host in `~/.agents/skills` (the cross-agent
+standard), `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills` when set), and
+`~/.vibe/skills` are mounted read-only under `/opt/sandboxsh/host-skills` at
+VM creation. Each skill is then symlinked into every agent's skill location
+inside the VM — `~/.claude/skills` for Claude Code, `~/.agents/skills` for pi,
+and `~/.vibe/skills` for Mistral Vibe — so all agents share all host skills.
+Skills installed inside a sandbox under the same name keep priority; the
+read-only mounts mean the guest can use but never modify host skills. The
+mounts are captured when the VM is created, so run `sandboxsh recreate` after
+adding the first skill on a host that had none.
+
 Changes to mounts, image, resources, or `agent_credentials` are immutable for an
 existing VM. `sandboxsh up` detects their fingerprint and requires
 `sandboxsh recreate`. Firewall destinations and declared ports are updated by
@@ -334,7 +347,7 @@ The build installs:
 - Docker Engine, BuildKit, and Compose v2
 - Git, curl, jq, ripgrep, fd, build-essential, PostgreSQL client, Vim/Neovim
 - Node.js 24 and pnpm
-- Python 3, uv, ruff, pytest, tox/tox-uv, and Invoke
+- Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli
 - Claude Code, pi (plus subagents/Impeccable/sideshow), and Mistral Vibe
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 

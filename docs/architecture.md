@@ -134,6 +134,14 @@ agent directories. Home paths are symlinked after the volume is mounted.
 This is intentionally a cross-project trust domain. Project-local credentials
 remain on each root disk and disappear on `destroy`/`recreate`.
 
+The host's user-level skill directories (`~/.agents/skills`, `~/.claude/skills`,
+`~/.vibe/skills`) are additionally shared with each VM as read-only disk
+devices; `sandboxsh-agent-init` symlinks each skill into the skill location of
+every agent (Claude Code, pi via the `~/.agents/skills` standard, and Mistral
+Vibe). Only the `skills` subdirectories are exposed — never all of `~/.claude`
+or `~/.vibe`, which hold host credentials — and the read-only devices keep the
+guest from writing into the host's home.
+
 ## Why a VM instead of nested Incus containers
 
 Docker Compose needs a Docker daemon, cgroups, OverlayFS, netfilter, and arbitrary

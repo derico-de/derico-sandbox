@@ -42,4 +42,34 @@ fi
 install -m 0600 -o dev -g dev "$tmp" "$settings"
 rm -f "$tmp"
 
+# Skills shared read-only from the host are linked into each agent's skill
+# location, one symlink per skill: ~/.claude/skills for Claude Code,
+# ~/.agents/skills (the cross-agent standard directory pi reads), and
+# ~/.vibe/skills for Mistral Vibe. In shared mode the .claude/.vibe paths are
+# symlinks onto /agent-creds, so the links land on the shared volume. An
+# existing real directory (a skill installed inside a sandbox) keeps priority;
+# on a host name collision the alphabetically first source wins.
+host_skills=/opt/sandboxsh/host-skills
+link_host_skills() {
+    target_dir="$1"
+    install -d -m 0755 -o dev -g dev "$target_dir"
+    for link in "$target_dir"/*; do
+        [ -L "$link" ] || continue
+        case "$(readlink "$link")" in
+            "$host_skills"/*) [ -e "$link" ] || rm -f "$link" ;;
+        esac
+    done
+    for skill in "$host_skills"/*/*/; do
+        [ -d "$skill" ] || continue
+        name="$(basename "$skill")"
+        target="$target_dir/$name"
+        [ -e "$target" ] && continue
+        ln -sn "${skill%/}" "$target"
+        chown -h dev:dev "$target"
+    done
+}
+link_host_skills "$HOME_DEV/.claude/skills"
+link_host_skills "$HOME_DEV/.agents/skills"
+link_host_skills "$HOME_DEV/.vibe/skills"
+
 echo "sandboxsh: $mode agent configuration initialized."
