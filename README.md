@@ -410,6 +410,7 @@ The build installs:
 - Node.js 24 and pnpm
 - Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli 7.0.0b14 or newer
 - OpenLDAP and SASL development headers for building `python-ldap`
+- Cairo, Pango, and image libraries for WeasyPrint-based PDF exports
 - Claude Code, pi (plus subagents/Impeccable/sideshow), and Mistral Vibe
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 - a default Claude Code status line (model, directory, branch, context-window
