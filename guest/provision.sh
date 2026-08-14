@@ -9,8 +9,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
     bash-completion build-essential ca-certificates curl fd-find git gnupg iproute2 jq \
-    less locales neovim openssh-client postgresql-client procps python3 python3-dev \
-    python3-pip python3-venv ripgrep rsync sudo tree unzip vim wget
+    less libldap2-dev libsasl2-dev locales neovim openssh-client postgresql-client \
+    procps python3 python3-dev python3-pip python3-venv ripgrep rsync sudo tree unzip \
+    vim wget
 rm -rf /var/lib/apt/lists/*
 ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 update-alternatives --set editor /usr/bin/nvim || true
