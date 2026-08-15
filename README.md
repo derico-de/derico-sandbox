@@ -151,6 +151,32 @@ Pass agent options after `--`, for example:
 sandboxsh agent pi -- --session /path/to/session.jsonl
 ```
 
+### Monitoring all sandboxes
+
+`sandboxsh status` covers only the current project's VM. To see every sandbox
+and its live resource usage, query Incus directly **on the host**, using the
+same restricted per-user project that sandboxsh itself uses:
+
+```bash
+incus --force-local --project "user-$(id -u)" list -c nsmMuD4   # one-shot table
+incus --force-local --project "user-$(id -u)" top               # live view
+incus --force-local --project "user-$(id -u)" info <instance>   # per-VM detail
+```
+
+The `list` columns are name, state, memory usage, memory %, CPU time, disk
+usage, and IPv4 address.
+
+A small wrapper saves the typing. Create `~/.local/bin/incustop` on the host:
+
+```bash
+#!/bin/sh
+exec incus --force-local --project "user-$(id -u)" top "$@"
+```
+
+Make it executable (`chmod +x ~/.local/bin/incustop`), then `incustop` gives a
+live CPU/memory/disk view of all sandbox VMs. These commands work only on the
+host; the Incus control socket is deliberately not exposed inside the VMs.
+
 ## Configuration
 
 ```json
