@@ -419,6 +419,19 @@ read-only mounts mean the guest can use but never modify host skills. The
 mounts are captured when the VM is created, so run `sandboxsh recreate` after
 adding the first skill on a host that had none.
 
+## Host agent instructions
+
+The host's user-level `~/.agents/AGENTS.md` — the cross-agent standard — is
+mounted read-only at `/opt/sandboxsh/host-instructions` by the same reasoning,
+so agents in the sandbox follow the same rules as on the host. The guest links
+it into `~/.agents/AGENTS.md` for pi and other AGENTS.md-aware agents and into
+`~/.claude/CLAUDE.md` for Claude Code. A `CLAUDE.md` or `AGENTS.md` written
+inside the sandbox keeps priority, and a link left behind by a removed host file
+is cleaned up on the next start. A host `CLAUDE.md` is not mounted: when it only
+imports `AGENTS.md` it adds nothing, and reaching it would mean sharing all of
+`~/.claude`. Like host skills, the mount is captured at VM creation, so run
+`sandboxsh recreate` for a VM created before the host had an `AGENTS.md`.
+
 Changes to image, resources, or `agent_credentials` are immutable for an
 existing VM. `sandboxsh up` detects their fingerprint and requires
 `sandboxsh recreate`. Mount changes are applied by the next `up` — external

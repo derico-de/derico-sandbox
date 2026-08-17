@@ -22,6 +22,10 @@ CREDS_VOLUME = "sandboxsh-agent-creds"
 # init links these into each agent's active configuration.
 HOST_SKILLS_TARGET = "/opt/sandboxsh/host-skills"
 
+# Guest mount point for the host's user-level agent instructions. The guest-side
+# init links `AGENTS.md` from here into each agent's active configuration.
+HOST_INSTRUCTIONS_TARGET = "/opt/sandboxsh/host-instructions"
+
 # Older daemons validate a bridged NIC's `security.acls` against the network
 # project (`default`, because the user project has features.networks=false) but
 # look the same ACL up in the *instance* project while starting the NIC. The ACL
@@ -66,6 +70,20 @@ def host_skill_sources() -> tuple[tuple[str, Path], ...]:
         ("vibe", Path.home() / ".vibe" / "skills"),
     )
     return tuple((name, path.resolve()) for name, path in candidates if path.is_dir())
+
+
+def host_instruction_source() -> Path | None:
+    """The host directory holding the user-level `AGENTS.md`, when it exists.
+
+    `~/.agents/AGENTS.md` is the cross-agent standard; a host `CLAUDE.md` that
+    only imports it needs no separate mount, and sharing all of ~/.claude to
+    reach one file would widen the credential surface. The whole directory is
+    shared because a VM disk device cannot bind a single file.
+    """
+    agents = Path.home() / ".agents"
+    if not (agents / "AGENTS.md").is_file():
+        return None
+    return agents.resolve()
 
 
 def parse_server_version(value: str) -> tuple[int, int, int] | None:
@@ -653,6 +671,22 @@ class Incus:
                     "disk",
                     f"source={skills}",
                     f"path={HOST_SKILLS_TARGET}/{source_name}",
+                    "readonly=true",
+                )
+
+            # The same reasoning covers the host's user-level AGENTS.md: shared
+            # read-only so every agent in the VM follows the host's rules.
+            instructions = host_instruction_source()
+            if instructions is not None:
+                self.command(
+                    "config",
+                    "device",
+                    "add",
+                    config.instance_name,
+                    "host-instructions",
+                    "disk",
+                    f"source={instructions}",
+                    f"path={HOST_INSTRUCTIONS_TARGET}",
                     "readonly=true",
                 )
 

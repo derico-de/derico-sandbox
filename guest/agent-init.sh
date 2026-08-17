@@ -104,4 +104,27 @@ link_host_skills "$HOME_DEV/.claude/skills"
 link_host_skills "$HOME_DEV/.agents/skills"
 link_host_skills "$HOME_DEV/.vibe/skills"
 
+# The host's user-level AGENTS.md is shared read-only under the same reasoning,
+# so agents in the VM follow the same rules as on the host. Pi and other agents
+# read ~/.agents/AGENTS.md, Claude Code reads ~/.claude/CLAUDE.md; both become
+# symlinks onto the read-only mount. A real file written inside the sandbox
+# keeps priority, and a link left behind by a removed host file is cleaned up.
+host_instructions=/opt/sandboxsh/host-instructions/AGENTS.md
+link_host_instructions() {
+    target="$1"
+    if [ -L "$target" ]; then
+        case "$(readlink "$target")" in
+            "$host_instructions") [ -e "$target" ] || rm -f "$target" ;;
+        esac
+    fi
+    [ -f "$host_instructions" ] || return 0
+    if [ -e "$target" ] && [ ! -L "$target" ]; then
+        return 0
+    fi
+    ln -sfn "$host_instructions" "$target"
+    chown -h dev:dev "$target"
+}
+link_host_instructions "$HOME_DEV/.agents/AGENTS.md"
+link_host_instructions "$HOME_DEV/.claude/CLAUDE.md"
+
 echo "sandboxsh: $mode agent configuration initialized."

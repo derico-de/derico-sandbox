@@ -10,6 +10,7 @@ from sandboxsh.incus import (
     PIN_END,
     Incus,
     acl_project_lookup_is_broken,
+    host_instruction_source,
     host_skill_sources,
     parse_server_version,
 )
@@ -646,6 +647,26 @@ def test_host_skill_sources_follows_claude_config_dir(tmp_path: Path, monkeypatc
     skills.mkdir(parents=True)
 
     assert host_skill_sources() == (("claude", skills.resolve()),)
+
+
+def test_host_instruction_source_shares_the_directory_holding_agents_md(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / "AGENTS.md").write_text("# rules\n")
+
+    assert host_instruction_source() == agents.resolve()
+
+
+def test_host_instruction_source_is_absent_without_a_host_agents_md(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".agents" / "skills").mkdir(parents=True)
+
+    assert host_instruction_source() is None
 
 
 def test_host_skill_sources_is_empty_without_skill_directories(tmp_path: Path, monkeypatch) -> None:
