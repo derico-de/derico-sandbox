@@ -41,6 +41,27 @@ rm -rf /var/lib/apt/lists/*
 corepack enable
 corepack prepare pnpm@latest --activate
 
+# Google Chrome and the Chrome DevTools MCP server, so agents can drive and
+# inspect a real browser. Chrome's own postinst would re-add this repository
+# with a legacy keyring; repo_add_once=false keeps the pinned entry below the
+# only one. Google publishes Chrome for amd64 only -- on another architecture
+# the image is built without a browser and agent-init skips the MCP server.
+if [ "$ARCH" = "amd64" ]; then
+    curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+        -o /etc/apt/keyrings/google-chrome.asc
+    chmod a+r /etc/apt/keyrings/google-chrome.asc
+    printf 'deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.asc] https://dl.google.com/linux/chrome/deb/ stable main\n' \
+        > /etc/apt/sources.list.d/google-chrome.list
+    printf 'repo_add_once=false\n' > /etc/default/google-chrome
+    apt-get update
+    apt-get install -y --no-install-recommends google-chrome-stable
+    rm -rf /var/lib/apt/lists/*
+    npm install -g chrome-devtools-mcp
+    google-chrome --version
+else
+    printf 'sandboxsh: skipping Google Chrome on %s (amd64 only)\n' "$ARCH" >&2
+fi
+
 # Cloud images often already own uid/gid 1000 (for example user `debian`).
 # Reuse and rename that account instead of assuming the IDs are vacant.
 if ! getent group dev >/dev/null; then

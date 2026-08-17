@@ -19,6 +19,8 @@ if mountpoint -q /agent-creds 2>/dev/null; then
     done
     chown -h dev:dev "$HOME_DEV/.claude" "$HOME_DEV/.pi" "$HOME_DEV/.vibe"
     settings=/agent-creds/claude/settings.json
+    # CLAUDE_CONFIG_DIR points at the shared volume, so .claude.json lives there.
+    claude_config=/agent-creds/claude/.claude.json
     mode=shared
 else
     # No shared volume: keep agent logins/configuration on this VM's root disk,
@@ -27,6 +29,9 @@ else
         install -d -m 0700 -o dev -g dev "$HOME_DEV/.$agent"
     done
     settings="$HOME_DEV/.claude/settings.json"
+    # Without the shared volume CLAUDE_CONFIG_DIR is unset, so Claude Code reads
+    # its user configuration from the home directory instead.
+    claude_config="$HOME_DEV/.claude.json"
     mode=project-local
 fi
 
@@ -73,6 +78,38 @@ printf '%s' "$existing" | jq --arg statusline "$statusline" '
     | .statusLine //= {"type":"command","command":$statusline}' > "$tmp"
 install -m 0600 -o dev -g dev "$tmp" "$settings"
 rm -f "$tmp"
+
+# Chrome DevTools MCP gives Claude Code a real browser to drive and inspect.
+# Chrome runs headless because the VM has no display, and each server gets an
+# isolated profile so several agents in one VM do not collide on a single Chrome
+# user-data directory. Google's telemetry and update checks are off: the ACL
+# blocks those endpoints anyway, and waiting on them only costs startup time.
+# MCP servers are configured in .claude.json -- settings.json ignores them --
+# and an entry configured inside the sandbox keeps priority.
+register_chrome_devtools_mcp() {
+    mcp_config="$1"
+    command -v chrome-devtools-mcp >/dev/null 2>&1 || return 0
+    command -v google-chrome >/dev/null 2>&1 || return 0
+    mcp_existing='{}'
+    if [ -f "$mcp_config" ] && jq empty "$mcp_config" >/dev/null 2>&1; then
+        mcp_existing="$(cat "$mcp_config")"
+    fi
+    mcp_tmp="$(mktemp)"
+    printf '%s' "$mcp_existing" | jq '
+        .mcpServers["chrome-devtools"] //= {
+            "command": "chrome-devtools-mcp",
+            "args": [
+                "--headless",
+                "--isolated",
+                "--no-usage-statistics",
+                "--no-performance-crux"
+            ],
+            "env": {"CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1"}
+        }' > "$mcp_tmp"
+    install -m 0600 -o dev -g dev "$mcp_tmp" "$mcp_config"
+    rm -f "$mcp_tmp"
+}
+register_chrome_devtools_mcp "$claude_config"
 
 # Skills shared read-only from the host are linked into each agent's skill
 # location, one symlink per skill: ~/.claude/skills for Claude Code,

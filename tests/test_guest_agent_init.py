@@ -1,5 +1,9 @@
+import json
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 
 def link_host_instructions_function() -> str:
@@ -73,3 +77,79 @@ def test_an_unrelated_link_survives_a_missing_host_file(tmp_path: Path) -> None:
 
     assert target.is_symlink()
     assert target.read_text() == "# other\n"
+
+
+def register_chrome_devtools_mcp_function() -> str:
+    agent_init = (Path(__file__).parents[1] / "guest" / "agent-init.sh").read_text()
+    start = agent_init.index("register_chrome_devtools_mcp() {")
+    end = agent_init.index("\n}\n", start) + len("\n}\n")
+    return agent_init[start:end]
+
+
+def run_register(tmp_path: Path, config: Path, *, browser: bool = True) -> None:
+    script = tmp_path / "register.sh"
+    stubs = (
+        # `command -v` finds shell functions, so these stand in for the binaries
+        # the golden image installs.
+        "chrome-devtools-mcp() { :; }\ngoogle-chrome() { :; }\n"
+        if browser
+        else "PATH=/nonexistent\n"
+    )
+    script.write_text(
+        "set -eu\n"
+        # The guest runs this as root; the test only cares about the JSON.
+        'install() { while [ $# -gt 2 ]; do shift; done; cp "$1" "$2"; }\n'
+        f"{stubs}"
+        f"{register_chrome_devtools_mcp_function()}"
+        f'register_chrome_devtools_mcp "{config}"\n'
+    )
+    subprocess.run(["bash", str(script)], check=True, capture_output=True, text=True)
+
+
+needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required in the guest")
+
+
+@needs_jq
+def test_chrome_devtools_is_registered_as_a_headless_user_scope_mcp_server(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / ".claude.json"
+    config.write_text(json.dumps({"numStartups": 3}))
+
+    run_register(tmp_path, config)
+
+    written = json.loads(config.read_text())
+    server = written["mcpServers"]["chrome-devtools"]
+    assert server["command"] == "chrome-devtools-mcp"
+    assert "--headless" in server["args"]
+    assert "--isolated" in server["args"]
+    # Unrelated Claude Code state survives the rewrite.
+    assert written["numStartups"] == 3
+
+
+@needs_jq
+def test_a_server_configured_inside_the_sandbox_keeps_priority(tmp_path: Path) -> None:
+    config = tmp_path / ".claude.json"
+    config.write_text(json.dumps({"mcpServers": {"chrome-devtools": {"command": "my-own-chrome"}}}))
+
+    run_register(tmp_path, config)
+
+    written = json.loads(config.read_text())
+    assert written["mcpServers"]["chrome-devtools"] == {"command": "my-own-chrome"}
+
+
+@needs_jq
+def test_a_missing_configuration_file_is_created(tmp_path: Path) -> None:
+    config = tmp_path / ".claude.json"
+
+    run_register(tmp_path, config)
+
+    assert "chrome-devtools" in json.loads(config.read_text())["mcpServers"]
+
+
+def test_an_image_without_chrome_registers_nothing(tmp_path: Path) -> None:
+    config = tmp_path / ".claude.json"
+
+    run_register(tmp_path, config, browser=False)
+
+    assert not config.exists()

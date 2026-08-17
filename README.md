@@ -229,8 +229,9 @@ host; the Incus control socket is deliberately not exposed inside the VMs.
 
 ### Network
 
-The built-in allowlist covers agent APIs, GitHub, npm/PyPI, Debian/Node/Docker
-package sources, and the Docker Hub registry. Project additions require approval:
+The built-in allowlist covers agent APIs, GitHub, npm/PyPI,
+Debian/Node/Docker/Chrome package sources, and the Docker Hub registry. Project
+additions require approval:
 
 ```bash
 sandboxsh approve
@@ -451,6 +452,7 @@ The build installs:
 - OpenLDAP and SASL development headers for building `python-ldap`
 - Cairo, Pango, and image libraries for WeasyPrint-based PDF exports
 - Claude Code, pi (plus subagents/Impeccable/sideshow), and Mistral Vibe
+- Google Chrome and the Chrome DevTools MCP server (see below; amd64 only)
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 - a default Claude Code status line (model, directory, branch, context-window
   usage, and five-hour/weekly plan-limit percentages), installed next to
@@ -463,6 +465,28 @@ Rebuild the alias after changing anything under `guest/`:
 sandboxsh image build
 sandboxsh recreate
 ```
+
+## Browser automation
+
+The image ships Google Chrome stable and
+[`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp),
+registered at boot as the user-scope Claude Code MCP server `chrome-devtools`,
+so an agent can drive a real browser, read the console, inspect network
+requests, and record performance traces. In shared mode the registration lands
+in `/agent-creds/claude/.claude.json`, otherwise in `~/.claude.json`; MCP
+servers are never read from `settings.json`. Verify it with `claude mcp list`
+inside the sandbox.
+
+The defaults are `--headless` (the VM has no display) and `--isolated` (a
+throwaway Chrome profile per server, so two agents in one VM do not fight over
+one user-data directory), with Google's usage statistics and update checks
+turned off. Change the entry inside a sandbox and it is left alone on every
+later boot — an existing `chrome-devtools` server is never overwritten.
+
+Chrome is subject to the same ACL as everything else in the VM: it reaches
+`localhost` services in the sandbox freely, and any external site it should
+load needs an entry in `firewall.allow`. Only Claude Code is wired up; pi has
+no MCP support by design.
 
 ## Validation
 
