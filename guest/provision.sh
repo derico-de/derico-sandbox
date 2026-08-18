@@ -12,7 +12,7 @@ apt-get install -y --no-install-recommends \
     less libcairo2 libffi-dev libgdk-pixbuf-2.0-0 libldap2-dev libpango-1.0-0 \
     libpangocairo-1.0-0 libsasl2-dev locales neovim openssh-client \
     postgresql-client procps python3 python3-dev python3-pip python3-venv ripgrep \
-    rsync shared-mime-info sudo tree unzip vim wget
+    rsync shared-mime-info sudo tig tree unzip vim wget
 rm -rf /var/lib/apt/lists/*
 ln -sf "$(command -v fdfind)" /usr/local/bin/fd
 update-alternatives --set editor /usr/bin/nvim || true
@@ -40,6 +40,25 @@ apt-get install -y --no-install-recommends nodejs
 rm -rf /var/lib/apt/lists/*
 corepack enable
 corepack prepare pnpm@latest --activate
+
+# Yazi, a terminal file manager. Debian has no package for it, so take the
+# upstream release build; upstream ships gnu binaries for these two targets only.
+case "$ARCH" in
+    amd64) YAZI_TARGET=x86_64-unknown-linux-gnu ;;
+    arm64) YAZI_TARGET=aarch64-unknown-linux-gnu ;;
+    *) YAZI_TARGET="" ;;
+esac
+if [ -n "$YAZI_TARGET" ]; then
+    curl -fsSL "https://github.com/sxyazi/yazi/releases/latest/download/yazi-$YAZI_TARGET.zip" \
+        -o /tmp/yazi.zip
+    unzip -q -d /tmp/yazi /tmp/yazi.zip
+    install -m 0755 "/tmp/yazi/yazi-$YAZI_TARGET/yazi" "/tmp/yazi/yazi-$YAZI_TARGET/ya" \
+        /usr/local/bin/
+    rm -rf /tmp/yazi /tmp/yazi.zip
+    yazi --version
+else
+    printf 'sandboxsh: skipping yazi on %s (no upstream build)\n' "$ARCH" >&2
+fi
 
 # Google Chrome and the Chrome DevTools MCP server, so agents can drive and
 # inspect a real browser. Chrome's own postinst would re-add this repository

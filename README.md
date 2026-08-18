@@ -446,7 +446,8 @@ shell.
 The build installs:
 
 - Docker Engine, BuildKit, and Compose v2
-- Git, curl, jq, ripgrep, fd, build-essential, PostgreSQL client, Vim/Neovim
+- Git, tig, curl, jq, ripgrep, fd, yazi, build-essential, PostgreSQL client,
+  Vim/Neovim
 - Node.js 24 and pnpm
 - Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli 7.0.0b14 or newer
 - OpenLDAP and SASL development headers for building `python-ldap`
