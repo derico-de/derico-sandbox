@@ -230,8 +230,8 @@ host; the Incus control socket is deliberately not exposed inside the VMs.
 ### Network
 
 The built-in allowlist covers agent APIs, GitHub, npm/PyPI,
-Debian/Node/Docker/Chrome package sources, and the Docker Hub registry. Project
-additions require approval:
+Debian/Node/Docker/Chrome package sources, Playwright's browser CDN, and the
+Docker Hub registry. Project additions require approval:
 
 ```bash
 sandboxsh approve
@@ -454,6 +454,8 @@ The build installs:
 - Cairo, Pango, and image libraries for WeasyPrint-based PDF exports
 - Claude Code, pi (plus subagents/Impeccable/sideshow), and Mistral Vibe
 - Google Chrome and the Chrome DevTools MCP server (see below; amd64 only)
+- Playwright with its Chromium build, plus the Playwright MCP server
+  (see below)
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 - a default Claude Code status line (model, directory, branch, context-window
   usage, and five-hour/weekly plan-limit percentages), installed next to
@@ -484,10 +486,24 @@ one user-data directory), with Google's usage statistics and update checks
 turned off. Change the entry inside a sandbox and it is left alone on every
 later boot — an existing `chrome-devtools` server is never overwritten.
 
-Chrome is subject to the same ACL as everything else in the VM: it reaches
-`localhost` services in the sandbox freely, and any external site it should
-load needs an entry in `firewall.allow`. Only Claude Code is wired up; pi has
-no MCP support by design.
+Playwright is the second browser, registered the same way as the MCP server
+`playwright` with `--headless --isolated`. It drives Playwright's own Chromium
+through accessibility snapshots instead of the DevTools protocol, which suits
+filling forms and walking end-to-end flows, and it is the engine a project's
+Playwright tests already use. Drop either entry from `.claude.json` inside a
+sandbox to give an agent one browser instead of two tool sets.
+
+The `playwright` CLI is on `PATH` and the Chromium build is shared through
+`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, owned by `dev`. A project pinned
+to a different Playwright version installs its own revision there with
+`npx playwright install`, and `npx playwright install firefox webkit` adds the
+other engines; `cdn.playwright.dev` is on the built-in allowlist, so both work
+without a firewall change.
+
+Both browsers are subject to the same ACL as everything else in the VM: they
+reach `localhost` services in the sandbox freely, and any external site they
+should load needs an entry in `firewall.allow`. Only Claude Code is wired up;
+pi has no MCP support by design.
 
 ## Validation
 

@@ -153,3 +153,56 @@ def test_an_image_without_chrome_registers_nothing(tmp_path: Path) -> None:
     run_register(tmp_path, config, browser=False)
 
     assert not config.exists()
+
+
+def register_playwright_mcp_function() -> str:
+    agent_init = (Path(__file__).parents[1] / "guest" / "agent-init.sh").read_text()
+    start = agent_init.index("register_playwright_mcp() {")
+    end = agent_init.index("\n}\n", start) + len("\n}\n")
+    return agent_init[start:end]
+
+
+def run_register_playwright(tmp_path: Path, config: Path, *, browser: bool = True) -> None:
+    script = tmp_path / "register-playwright.sh"
+    stubs = "playwright-mcp() { :; }\n" if browser else "PATH=/nonexistent\n"
+    script.write_text(
+        "set -eu\n"
+        'install() { while [ $# -gt 2 ]; do shift; done; cp "$1" "$2"; }\n'
+        f"{stubs}"
+        f"{register_playwright_mcp_function()}"
+        f'register_playwright_mcp "{config}"\n'
+    )
+    subprocess.run(["bash", str(script)], check=True, capture_output=True, text=True)
+
+
+@needs_jq
+def test_playwright_is_registered_as_a_headless_user_scope_mcp_server(tmp_path: Path) -> None:
+    config = tmp_path / ".claude.json"
+    config.write_text(json.dumps({"mcpServers": {"chrome-devtools": {"command": "keep-me"}}}))
+
+    run_register_playwright(tmp_path, config)
+
+    servers = json.loads(config.read_text())["mcpServers"]
+    assert servers["playwright"]["command"] == "playwright-mcp"
+    assert servers["playwright"]["args"] == ["--headless", "--isolated"]
+    # The browser registered before it survives the rewrite.
+    assert servers["chrome-devtools"] == {"command": "keep-me"}
+
+
+@needs_jq
+def test_a_playwright_server_configured_inside_the_sandbox_keeps_priority(tmp_path: Path) -> None:
+    config = tmp_path / ".claude.json"
+    config.write_text(json.dumps({"mcpServers": {"playwright": {"command": "my-own-playwright"}}}))
+
+    run_register_playwright(tmp_path, config)
+
+    written = json.loads(config.read_text())
+    assert written["mcpServers"]["playwright"] == {"command": "my-own-playwright"}
+
+
+def test_an_image_without_playwright_registers_nothing(tmp_path: Path) -> None:
+    config = tmp_path / ".claude.json"
+
+    run_register_playwright(tmp_path, config, browser=False)
+
+    assert not config.exists()

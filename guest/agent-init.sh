@@ -111,6 +111,28 @@ register_chrome_devtools_mcp() {
 }
 register_chrome_devtools_mcp "$claude_config"
 
+# Playwright MCP is the second browser: it drives Playwright's own Chromium
+# through accessibility snapshots rather than the DevTools protocol, which suits
+# filling forms and walking end-to-end flows, and it is the same engine a
+# project's Playwright tests use. Headless and isolated for the reasons above.
+register_playwright_mcp() {
+    mcp_config="$1"
+    command -v playwright-mcp >/dev/null 2>&1 || return 0
+    mcp_existing='{}'
+    if [ -f "$mcp_config" ] && jq empty "$mcp_config" >/dev/null 2>&1; then
+        mcp_existing="$(cat "$mcp_config")"
+    fi
+    mcp_tmp="$(mktemp)"
+    printf '%s' "$mcp_existing" | jq '
+        .mcpServers["playwright"] //= {
+            "command": "playwright-mcp",
+            "args": ["--headless", "--isolated"]
+        }' > "$mcp_tmp"
+    install -m 0600 -o dev -g dev "$mcp_tmp" "$mcp_config"
+    rm -f "$mcp_tmp"
+}
+register_playwright_mcp "$claude_config"
+
 # Skills shared read-only from the host are linked into each agent's skill
 # location, one symlink per skill: ~/.claude/skills for Claude Code,
 # ~/.agents/skills (the cross-agent standard directory pi reads), and

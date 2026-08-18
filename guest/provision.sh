@@ -107,6 +107,18 @@ chmod 0440 /etc/sudoers.d/dev
 install -d -m 0755 /workspaces /opt/sandboxsh/agent-seed
 chown dev:dev /workspaces
 
+# Playwright: the CLI, the MCP server, and a browser build agents and project
+# test suites can share. Browsers are downloaded once into a system-wide
+# PLAYWRIGHT_BROWSERS_PATH instead of a per-user cache, and dev owns it so a
+# project pinned to another Playwright version can add its revision beside the
+# baked-in one from the allowlisted Playwright CDN.
+npm install -g playwright @playwright/mcp
+install -d -m 0755 -o dev -g dev /opt/ms-playwright
+PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright playwright install --with-deps chromium
+rm -rf /var/lib/apt/lists/*
+chown -R dev:dev /opt/ms-playwright
+playwright --version
+
 # Keep git publication behind a deliberate host/human step. Guest root can
 # bypass this (Docker membership makes guest root part of the threat model), but
 # it prevents routine autonomous pushes and accidental publication.
@@ -149,6 +161,7 @@ export PATH="$HOME/.local/bin:$PATH"
 # pnpm 11 stores a SQLite index beside its package content. Keep it off the
 # virtiofs/9p project mount, where SQLite WAL/mmap may fail with SQLITE_IOERR.
 export PNPM_CONFIG_STORE_DIR="$HOME/.local/share/pnpm/store"
+export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 if [ -d /agent-creds/claude ]; then
     export CLAUDE_CONFIG_DIR=/agent-creds/claude
 fi
