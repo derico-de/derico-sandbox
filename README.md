@@ -456,6 +456,7 @@ The build installs:
 - Google Chrome and the Chrome DevTools MCP server (see below; amd64 only)
 - Playwright with its Chromium build, plus the Playwright MCP server
   (see below)
+- the sideshow CLI, so any agent can publish to a visual surface (see below)
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 - a default Claude Code status line (model, directory, branch, context-window
   usage, and five-hour/weekly plan-limit percentages), installed next to
@@ -504,6 +505,30 @@ Both browsers are subject to the same ACL as everything else in the VM: they
 reach `localhost` services in the sandbox freely, and any external site they
 should load needs an entry in `firewall.allow`. Only Claude Code is wired up;
 pi has no MCP support by design.
+
+## Visual previews
+
+[sideshow](https://github.com/modem-dev/sideshow) is a live surface a user
+watches in a browser while an agent publishes HTML, markdown, diffs, diagrams,
+and highlighted code to it. pi reaches it through the extension in the image;
+Claude Code and Mistral Vibe have no such extension, so the image installs the
+`sideshow` CLI globally and every agent in the VM can use it:
+
+```bash
+SIDESHOW_URL=http://your-host:8228 sideshow agent-howto
+SIDESHOW_URL=http://your-host:8228 sideshow publish sketch.html --title Layout
+```
+
+Which surface the CLI talks to is yours, not the image's: it reads
+`SIDESHOW_URL` (and `SIDESHOW_TOKEN` for a deployed instance that wants a
+bearer token) on each call, so nothing is baked in and one image serves several
+surfaces. The default is `localhost:8228`, which inside a sandbox means a server
+in that VM, not the one on your workstation. A surface outside the VM is a
+network destination like any other: add its host and port to `firewall.allow`,
+or to `~/.config/sandboxsh/endpoints.json` on the host to reach it from every
+sandbox. Telling agents about the surface is the job of your `~/.agents/AGENTS.md`,
+which is already shared into every VM (see *Host agent instructions*) — the
+running server prints a block to paste at `curl -s $SIDESHOW_URL/setup`.
 
 ## Validation
 

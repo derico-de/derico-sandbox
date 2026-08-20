@@ -119,6 +119,15 @@ rm -rf /var/lib/apt/lists/*
 chown -R dev:dev /opt/ms-playwright
 playwright --version
 
+# sideshow publishes HTML, diffs, and diagrams to a live surface the user watches
+# in a browser. pi drives it through the extension installed below; every other
+# agent needs the CLI, so install it globally and put `sideshow` on PATH. Which
+# surface it talks to is per-user, not per-image: the CLI reads SIDESHOW_URL
+# (and SIDESHOW_TOKEN for a deployed instance) at call time, and reaching a
+# surface outside the VM needs that host in `firewall.allow`.
+npm install -g sideshow
+sideshow --version
+
 # Keep git publication behind a deliberate host/human step. Guest root can
 # bypass this (Docker membership makes guest root part of the threat model), but
 # it prevents routine autonomous pushes and accidental publication.
