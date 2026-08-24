@@ -420,6 +420,23 @@ read-only mounts mean the guest can use but never modify host skills. The
 mounts are captured when the VM is created, so run `sandboxsh recreate` after
 adding the first skill on a host that had none.
 
+## Skills in the image
+
+Two skills ship with the golden image itself, so they are there on a host that
+keeps no skills directory at all:
+
+- `unslop` cuts the tells that mark text as model-written.
+- `bro` restates the previous message in plain language, without jargon.
+
+Both come from the [pstack plugin](https://github.com/cursor/plugins/tree/main/pstack)
+and are fetched at build time, so a rebuild picks up upstream edits. They live
+under `/opt/sandboxsh/image-skills` and are linked into `~/.claude/skills`,
+`~/.agents/skills`, and `~/.vibe/skills` at every boot by the same code that
+links host skills, host root first. A skill installed inside the sandbox wins,
+then a host skill of that name, then the image copy. Remove one for a single sandbox
+by deleting its symlink, or for good by dropping it from `guest/provision.sh`
+and rebuilding.
+
 ## Host agent instructions
 
 The host's user-level `~/.agents/AGENTS.md` — the cross-agent standard — is
@@ -457,6 +474,8 @@ The build installs:
 - Playwright with its Chromium build, plus the Playwright MCP server
   (see below)
 - the sideshow CLI, so any agent can publish to a visual surface (see below)
+- the `unslop` and `bro` writing skills from pstack, linked into every
+  agent's skill directory (see *Skills in the image*)
 - a default git pre-push hook that requires `SANDBOXSH_ALLOW_PUSH=1`
 - a default Claude Code status line (model, directory, branch, context-window
   usage, and five-hour/weekly plan-limit percentages), installed next to

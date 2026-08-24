@@ -144,6 +144,11 @@ Vibe). Only the `skills` subdirectories are exposed — never all of `~/.claude`
 or `~/.vibe`, which hold host credentials — and the read-only devices keep the
 guest from writing into the host's home.
 
+A second skill root, `/opt/sandboxsh/image-skills`, is baked into the image
+and linked by the same function after the host root, so a host skill of the
+same name shadows the image copy and a skill installed inside the sandbox
+shadows both.
+
 ## Why a VM instead of nested Incus containers
 
 Docker Compose needs a Docker daemon, cgroups, OverlayFS, netfilter, and arbitrary

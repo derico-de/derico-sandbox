@@ -128,6 +128,23 @@ playwright --version
 npm install -g sideshow
 sideshow --version
 
+# Agent skills baked into the image. The host's own skills are mounted read-only
+# at VM creation, but a host that keeps none still gets these. From the pstack
+# plugin: `unslop` strips the tells that mark text as model-written, and `bro`
+# restates the last message without jargon. Each is a single self-contained
+# SKILL.md tracked at main rather than pinned, like the npm globals above. The
+# layout mirrors the host mount -- <source>/<skill>/ -- so agent-init links both
+# roots with one function, and a skill of the same name from the host or from
+# inside a sandbox keeps priority. The grep is the build-time smoke test: a 404
+# body or a renamed skill fails the build here.
+pstack_raw=https://raw.githubusercontent.com/cursor/plugins/main/pstack/skills
+for skill in unslop bro; do
+    install -d -m 0755 "/opt/sandboxsh/image-skills/pstack/$skill"
+    curl -fsSL "$pstack_raw/$skill/SKILL.md" \
+        -o "/opt/sandboxsh/image-skills/pstack/$skill/SKILL.md"
+    grep -qx "name: $skill" "/opt/sandboxsh/image-skills/pstack/$skill/SKILL.md"
+done
+
 # Keep git publication behind a deliberate host/human step. Guest root can
 # bypass this (Docker membership makes guest root part of the threat model), but
 # it prevents routine autonomous pushes and accidental publication.

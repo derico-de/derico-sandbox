@@ -133,24 +133,28 @@ register_playwright_mcp() {
 }
 register_playwright_mcp "$claude_config"
 
-# Skills shared read-only from the host are linked into each agent's skill
-# location, one symlink per skill: ~/.claude/skills for Claude Code,
-# ~/.agents/skills (the cross-agent standard directory pi reads), and
-# ~/.vibe/skills for Mistral Vibe. In shared mode the .claude/.vibe paths are
-# symlinks onto /agent-creds, so the links land on the shared volume. An
-# existing real directory (a skill installed inside a sandbox) keeps priority;
-# on a host name collision the alphabetically first source wins.
+# Skills are linked into each agent's skill location, one symlink per skill:
+# ~/.claude/skills for Claude Code, ~/.agents/skills (the cross-agent standard
+# directory pi reads), and ~/.vibe/skills for Mistral Vibe. In shared mode the
+# .claude/.vibe paths are symlinks onto /agent-creds, so the links land on the
+# shared volume. Two roots hold <source>/<skill>/ trees: the host's skills,
+# mounted read-only at VM creation, and the ones baked into the image. An
+# existing real directory (a skill installed inside a sandbox) keeps priority,
+# then the host, then the image; on a name collision within one root the
+# alphabetically first source wins.
 host_skills=/opt/sandboxsh/host-skills
-link_host_skills() {
-    target_dir="$1"
+image_skills=/opt/sandboxsh/image-skills
+link_skills() {
+    root="$1"
+    target_dir="$2"
     install -d -m 0755 -o dev -g dev "$target_dir"
     for link in "$target_dir"/*; do
         [ -L "$link" ] || continue
         case "$(readlink "$link")" in
-            "$host_skills"/*) [ -e "$link" ] || rm -f "$link" ;;
+            "$root"/*) [ -e "$link" ] || rm -f "$link" ;;
         esac
     done
-    for skill in "$host_skills"/*/*/; do
+    for skill in "$root"/*/*/; do
         [ -d "$skill" ] || continue
         name="$(basename "$skill")"
         target="$target_dir/$name"
@@ -159,9 +163,10 @@ link_host_skills() {
         chown -h dev:dev "$target"
     done
 }
-link_host_skills "$HOME_DEV/.claude/skills"
-link_host_skills "$HOME_DEV/.agents/skills"
-link_host_skills "$HOME_DEV/.vibe/skills"
+for skills_dir in "$HOME_DEV/.claude/skills" "$HOME_DEV/.agents/skills" "$HOME_DEV/.vibe/skills"; do
+    link_skills "$host_skills" "$skills_dir"
+    link_skills "$image_skills" "$skills_dir"
+done
 
 # The host's user-level AGENTS.md is shared read-only under the same reasoning,
 # so agents in the VM follow the same rules as on the host. Pi and other agents
