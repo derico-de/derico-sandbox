@@ -16,6 +16,10 @@ def project_config(root: Path, **updates):
     return load_config(path)
 
 
+def test_firecrawl_api_is_a_builtin_endpoint() -> None:
+    assert FirewallEntry("api.firecrawl.dev", (443,)) in security.DEFAULT_ENDPOINTS
+
+
 def test_acl_is_default_deny_with_only_resolved_destinations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

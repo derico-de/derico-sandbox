@@ -22,6 +22,7 @@ DEFAULT_ENDPOINTS: tuple[FirewallEntry, ...] = (
     FirewallEntry("auth.openai.com", (443,)),
     FirewallEntry("chatgpt.com", (443,)),
     FirewallEntry("api.mistral.ai", (443,)),
+    FirewallEntry("api.firecrawl.dev", (443,)),
     FirewallEntry("github.com", (22, 443)),
     FirewallEntry("api.github.com", (443,)),
     FirewallEntry("codeload.github.com", (443,)),

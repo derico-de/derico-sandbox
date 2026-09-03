@@ -178,6 +178,7 @@ curl -fsSL https://pi.dev/install.sh | sh
 pi install npm:pi-subagents
 pi install npm:pi-impeccable
 pi install npm:sideshow
+pi install npm:@narumitw/pi-firecrawl
 '
 
 cat > /etc/profile.d/sandboxsh.sh <<'PROFILE'
@@ -188,6 +189,15 @@ export PATH="$HOME/.local/bin:$PATH"
 # virtiofs/9p project mount, where SQLite WAL/mmap may fail with SQLITE_IOERR.
 export PNPM_CONFIG_STORE_DIR="$HOME/.local/share/pnpm/store"
 export PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+# Firecrawl's Pi extension reads its credential from the environment. Keep the
+# key out of the image: a user may add it at runtime to Pi's credential state,
+# which is shared between VMs when agent_credentials is enabled and VM-local
+# otherwise.
+firecrawl_key_file="$HOME/.pi/firecrawl-api-key"
+if [ -r "$firecrawl_key_file" ]; then
+    export FIRECRAWL_API_KEY="$(cat "$firecrawl_key_file")"
+fi
+unset firecrawl_key_file
 if [ -d /agent-creds/claude ]; then
     export CLAUDE_CONFIG_DIR=/agent-creds/claude
 fi
