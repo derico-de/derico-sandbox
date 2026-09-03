@@ -78,7 +78,9 @@ The installer never adds you to `incus-admin`. A fresh Incus daemon is minimally
 initialized, then `incus-user` creates the restricted `user-<uid>` project and a
 per-user managed bridge when you first use it. Expect a host `sudo` prompt when
 sandboxsh creates, refreshes, or removes the bridge's ACL; no other routine Incus
-operations use administrator authority.
+operations use administrator authority. Commands that will need it ask for the
+password up front, before the slow Incus work, so the prompt never appears on a
+terminal you have stopped watching.
 
 The default golden image is built from `images:debian/13/cloud`. Override it if
 needed:

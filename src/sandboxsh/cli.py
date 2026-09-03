@@ -158,6 +158,28 @@ def _interactive() -> bool:
         return False
 
 
+def _prime_sudo(context: Context, purpose: str) -> None:
+    """Ask for the host password before the slow work, never in the middle of it.
+
+    A few steps need trusted host sudo -- the network ACL control plane and the
+    publish helper -- and they sit behind minutes of Incus work. Reaching them
+    late puts sudo's prompt on a terminal nobody is watching any more, where it
+    is missed until sudo gives up and fails the whole command. Validating the
+    timestamp here moves the prompt to where the caller still is.
+    """
+    if shutil.which("sudo") is None:
+        return  # `doctor` reports the missing dependency; do not crash here.
+    if context.runner.run(["sudo", "-n", "true"], check=False).returncode == 0:
+        return  # Already cached for this terminal, or passwordless sudoers.
+    if not _interactive():
+        # Nothing to prompt on; let the privileged step report the real failure.
+        return
+    click.echo(f"Host password required to {purpose}.", err=True)
+    result = context.runner.run(["sudo", "-v"], check=False, capture=False)
+    if result.returncode:
+        raise SandboxshError(f"host sudo is required to {purpose}")
+
+
 def _publish(context: Context, config: ProjectConfig) -> tuple[Endpoint, ...]:
     """Bring published tailnet ports in line with the approved configuration."""
     requested = config.publishable
@@ -221,6 +243,7 @@ def _withdraw(context: Context, config: ProjectConfig) -> None:
 def _up(context: Context, *, enter_shell: bool) -> None:
     config = context.config()
     _verify_and_approve(context, config)
+    _prime_sudo(context, "apply this project's host-enforced firewall")
     if context.incus.exists(config.instance_name):
         context.incus.assert_immutable_config(config)
         attached, removed = context.incus.sync_mounts(config)
@@ -311,6 +334,8 @@ def down_command(context: Context) -> None:
     """Stop the VM but preserve its disk and project-local credentials."""
     config = context.config()
     context.incus.verify_host_access()
+    if context.publisher.helper_available():
+        _prime_sudo(context, "withdraw this project's published ports")
     # Withdraw the listeners first: a published port whose VM is gone accepts
     # connections and then hangs. The host port stays reserved for this project.
     _withdraw(context, config)
@@ -330,6 +355,7 @@ def destroy_command(context: Context, yes: bool) -> None:
         f"Delete {config.instance_name} and all VM-local credentials/state?", default=False
     ):
         raise SandboxshError("destroy cancelled")
+    _prime_sudo(context, "delete this project's network ACL")
     _withdraw(context, config)
     release_host_ports(config)
     context.incus.destroy(config)
@@ -350,6 +376,7 @@ def recreate_command(context: Context, yes: bool, no_shell: bool) -> None:
             "Delete the VM-local disk and project credentials, then recreate?", default=False
         ):
             raise SandboxshError("recreate cancelled")
+        _prime_sudo(context, "replace this project's VM and network ACL")
         context.incus.destroy(config)
     _up(context, enter_shell=not no_shell)
 
@@ -433,6 +460,8 @@ def publish_command(context: Context) -> None:
     context.incus.verify_host_access()
     if context.incus.instance_status(config.instance_name) != "Running":
         raise SandboxshError("VM is not running; use `sandboxsh up`")
+    if config.publishable and context.publisher.helper_available():
+        _prime_sudo(context, "publish ports on this host's tailnet")
     endpoints = _publish(context, config)
     if not endpoints:
         click.echo("Nothing is published for this project.")
@@ -449,6 +478,7 @@ def unpublish_command(context: Context) -> None:
     config = context.config()
     if not context.publisher.helper_available():
         raise SandboxshError(INSTALL_HELPER_HINT)
+    _prime_sudo(context, "withdraw this project's published ports")
     context.publisher.clear(config)
     release_host_ports(config)
     click.echo(f"Withdrew published ports for {config.instance_name}.")
@@ -461,6 +491,7 @@ def refresh_firewall_command(context: Context) -> None:
     """Re-resolve allowed names and atomically replace the Incus network ACL."""
     config = context.config()
     _verify_and_approve(context, config)
+    _prime_sudo(context, "replace this project's host-enforced firewall")
     policy = context.incus.apply_acl(config)
     _report_unresolved_defaults(policy)
     context.incus.attach_acl(config)

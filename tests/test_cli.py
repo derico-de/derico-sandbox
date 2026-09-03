@@ -293,3 +293,85 @@ def test_a_port_kept_off_the_tailnet_is_never_published(tmp_path: Path, monkeypa
     assert result.exit_code == 0, result.output
     assert not any("sync" in command for command in runner.commands)
     assert "Nothing is published" in result.output
+
+
+def host_with_sudo(monkeypatch) -> None:
+    """Undo publishing_project's blanket `which` stub for sudo alone."""
+    monkeypatch.setattr(
+        "sandboxsh.cli.shutil.which",
+        lambda command: "/usr/bin/sudo" if command == "sudo" else None,
+    )
+
+
+class SudoRunner(RecordingRunner):
+    """A host whose sudo always asks for a password."""
+
+    def run(self, command, **kwargs):
+        self.commands.append([str(part) for part in command])
+        if command[:2] == ["sudo", "-n"]:
+            return Result("", "sudo: a password is required\n", 1)
+        return Result("", "", 0)
+
+
+def test_publish_asks_for_the_host_password_before_the_privileged_helper(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sandboxsh.publish import Publisher
+
+    path = publishing_project(tmp_path, monkeypatch)
+    runner = SudoRunner()
+    monkeypatch.setattr("sandboxsh.cli.Runner", lambda: runner)
+    monkeypatch.setattr(Publisher, "helper_available", lambda self: True)
+    host_with_sudo(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "publish"])
+
+    assert result.exit_code == 0, result.output
+    validate = runner.commands.index(["sudo", "-v"])
+    helper = next(
+        index
+        for index, command in enumerate(runner.commands)
+        if "sandboxsh-publish-port" in " ".join(command)
+    )
+    assert validate < helper
+    assert "Host password required to publish ports" in result.output
+
+
+def test_a_refused_host_password_fails_before_any_privileged_work(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sandboxsh.publish import Publisher
+
+    path = publishing_project(tmp_path, monkeypatch)
+
+    class RefusingRunner(SudoRunner):
+        def run(self, command, **kwargs):
+            super().run(command, **kwargs)
+            return Result("", "", 1)
+
+    runner = RefusingRunner()
+    monkeypatch.setattr("sandboxsh.cli.Runner", lambda: runner)
+    monkeypatch.setattr(Publisher, "helper_available", lambda self: True)
+    host_with_sudo(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "publish"])
+
+    assert result.exit_code != 0
+    assert "host sudo is required to publish ports" in result.output
+    assert not any("sandboxsh-publish-port" in " ".join(command) for command in runner.commands)
+
+
+def test_cached_sudo_credentials_are_never_reprompted(tmp_path: Path, monkeypatch) -> None:
+    from sandboxsh.publish import Publisher
+
+    path = publishing_project(tmp_path, monkeypatch)
+    runner = RecordingRunner()  # Every sudo probe succeeds, as with a warm timestamp.
+    monkeypatch.setattr("sandboxsh.cli.Runner", lambda: runner)
+    monkeypatch.setattr(Publisher, "helper_available", lambda self: True)
+    host_with_sudo(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "publish"])
+
+    assert result.exit_code == 0, result.output
+    assert ["sudo", "-v"] not in runner.commands
+    assert "Host password required" not in result.output
