@@ -162,26 +162,40 @@ register_playwright_mcp "$claude_config"
 # alphabetically first source wins.
 host_skills=/opt/sandboxsh/host-skills
 image_skills=/opt/sandboxsh/image-skills
+clean_skill_links() {
+    target_dir="$1"
+    shift
+    install -d -m 0755 -o dev -g dev "$target_dir"
+    for link in "$target_dir"/*; do
+        [ -L "$link" ] || continue
+        link_target="$(readlink "$link")"
+        for root in "$@"; do
+            case "$link_target" in
+                "$root"/*)
+                    [ -e "$link" ] || rm -f "$link"
+                    break
+                    ;;
+            esac
+        done
+    done
+}
 link_skills() {
     root="$1"
     target_dir="$2"
     install -d -m 0755 -o dev -g dev "$target_dir"
-    for link in "$target_dir"/*; do
-        [ -L "$link" ] || continue
-        case "$(readlink "$link")" in
-            "$root"/*) [ -e "$link" ] || rm -f "$link" ;;
-        esac
-    done
     for skill in "$root"/*/*/; do
         [ -d "$skill" ] || continue
         name="$(basename "$skill")"
         target="$target_dir/$name"
-        [ -e "$target" ] && continue
+        if [ -e "$target" ] || [ -L "$target" ]; then
+            continue
+        fi
         ln -sn "${skill%/}" "$target"
         chown -h dev:dev "$target"
     done
 }
 for skills_dir in "$HOME_DEV/.claude/skills" "$HOME_DEV/.agents/skills" "$HOME_DEV/.vibe/skills"; do
+    clean_skill_links "$skills_dir" "$host_skills" "$image_skills"
     link_skills "$host_skills" "$skills_dir"
     link_skills "$image_skills" "$skills_dir"
 done

@@ -79,22 +79,25 @@ def test_an_unrelated_link_survives_a_missing_host_file(tmp_path: Path) -> None:
     assert target.read_text() == "# other\n"
 
 
-def link_skills_function() -> str:
+def agent_init_function(name: str) -> str:
     agent_init = (Path(__file__).parents[1] / "guest" / "agent-init.sh").read_text()
-    start = agent_init.index("link_skills() {")
+    start = agent_init.index(f"{name}() {{")
     end = agent_init.index("\n}\n", start) + len("\n}\n")
     return agent_init[start:end]
 
 
 def run_link_skills(tmp_path: Path, roots: list[Path], target_dir: Path) -> None:
     script = tmp_path / "link-skills.sh"
+    root_args = " ".join(f'"{root}"' for root in roots)
     calls = "".join(f'link_skills "{root}" "{target_dir}"\n' for root in roots)
     script.write_text(
         "set -eu\n"
         # The guest runs this as root; the test only cares about the links.
         'install() { mkdir -p "${@: -1}"; }\n'
         "chown() { :; }\n"
-        f"{link_skills_function()}"
+        f'{agent_init_function("clean_skill_links")}'
+        f'{agent_init_function("link_skills")}'
+        f'clean_skill_links "{target_dir}" {root_args}\n'
         f"{calls}"
     )
     subprocess.run(["bash", str(script)], check=True, capture_output=True, text=True)
@@ -151,6 +154,19 @@ def test_a_host_skill_wins_over_an_image_skill_of_the_same_name(tmp_path: Path) 
     assert (target_dir / "unslop").readlink() == host_skill
 
 
+def test_a_stale_image_skill_link_can_be_replaced_by_a_host_skill(tmp_path: Path) -> None:
+    host = tmp_path / "host-skills"
+    image = tmp_path / "image-skills"
+    host_skill = make_skill(host, "agents", "closeout")
+    target_dir = tmp_path / "home" / ".agents" / "skills"
+    target_dir.mkdir(parents=True)
+    (target_dir / "closeout").symlink_to(image / "pstack" / "closeout")
+
+    run_link_skills(tmp_path, [host, image], target_dir)
+
+    assert (target_dir / "closeout").readlink() == host_skill
+
+
 def test_a_link_to_a_removed_skill_is_cleaned_up(tmp_path: Path) -> None:
     image = tmp_path / "image-skills"
     make_skill(image, "pstack", "bro")
@@ -160,13 +176,15 @@ def test_a_link_to_a_removed_skill_is_cleaned_up(tmp_path: Path) -> None:
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (target_dir / "other").symlink_to(elsewhere)
+    (target_dir / "other-missing").symlink_to(tmp_path / "missing")
 
     run_link_skills(tmp_path, [image], target_dir)
 
     assert not (target_dir / "unslop").is_symlink()
     assert (target_dir / "bro").is_symlink()
-    # A link pointing outside the managed roots is left alone.
+    # Valid and dangling links outside the managed roots are left alone.
     assert (target_dir / "other").is_symlink()
+    assert (target_dir / "other-missing").is_symlink()
 
 
 def register_chrome_devtools_mcp_function() -> str:
