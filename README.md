@@ -467,7 +467,7 @@ The build installs:
 - Docker Engine, BuildKit, and Compose v2
 - Git, tig, curl, jq, ripgrep, fd, yazi, build-essential, PostgreSQL client,
   Vim/Neovim
-- Node.js 24 and pnpm
+- Node.js 24 and pnpm; image-wide, project, and Pi package installs all use pnpm
 - Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli 7.0.0b14 or newer
 - OpenLDAP and SASL development headers for building `python-ldap`
 - Cairo, Pango, and image libraries for WeasyPrint-based PDF exports
@@ -483,6 +483,10 @@ The build installs:
   usage, and five-hour/weekly plan-limit percentages), installed next to
   settings.json at boot; plan limits appear for Claude.ai subscribers after the
   first API response, and a statusLine you configure yourself is left alone
+
+Pi package identifiers still use Pi's `npm:<package>` source syntax, but the
+configured `npmCommand` is `pnpm`, so registry lookups and installation are
+performed by pnpm rather than npm.
 
 Rebuild the alias after changing anything under `guest/`:
 
@@ -518,7 +522,7 @@ sandbox to give an agent one browser instead of two tool sets.
 The `playwright` CLI is on `PATH` and the Chromium build is shared through
 `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, owned by `dev`. A project pinned
 to a different Playwright version installs its own revision there with
-`npx playwright install`, and `npx playwright install firefox webkit` adds the
+`pnpm exec playwright install`, and `pnpm exec playwright install firefox webkit` adds the
 other engines; `cdn.playwright.dev` is on the built-in allowlist, so both work
 without a firewall change.
 

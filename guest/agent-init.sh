@@ -35,6 +35,24 @@ else
     mode=project-local
 fi
 
+# Pi's package source syntax remains npm:<name>, but npmCommand selects pnpm for
+# registry lookups and installs. Enforce it at boot so an existing shared
+# configuration also picks up the image's package-manager policy.
+configure_pi_package_manager() {
+    local pi_settings="$1"
+    local pi_existing='{}'
+    local pi_tmp
+    install -d -m 0700 -o dev -g dev "$(dirname "$pi_settings")"
+    if [ -f "$pi_settings" ] && jq empty "$pi_settings" >/dev/null 2>&1; then
+        pi_existing="$(cat "$pi_settings")"
+    fi
+    pi_tmp="$(mktemp)"
+    printf '%s' "$pi_existing" | jq '.npmCommand=["pnpm"]' > "$pi_tmp"
+    install -m 0600 -o dev -g dev "$pi_tmp" "$pi_settings"
+    rm -f "$pi_tmp"
+}
+configure_pi_package_manager "$HOME_DEV/.pi/agent/settings.json"
+
 # The status line lives next to settings.json: in shared mode both are on the
 # shared volume, so every sandbox sees the same script at the same path.
 statusline="$(dirname "$settings")/statusline.sh"

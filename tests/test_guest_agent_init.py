@@ -199,6 +199,36 @@ def run_register(tmp_path: Path, config: Path, *, browser: bool = True) -> None:
 needs_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required in the guest")
 
 
+def configure_pi_package_manager_function() -> str:
+    agent_init = (Path(__file__).parents[1] / "guest" / "agent-init.sh").read_text()
+    start = agent_init.index("configure_pi_package_manager() {")
+    end = agent_init.index("\n}\n", start) + len("\n}\n")
+    return agent_init[start:end]
+
+
+@needs_jq
+def test_pi_uses_pnpm_without_discarding_existing_settings(tmp_path: Path) -> None:
+    settings = tmp_path / ".pi" / "agent" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"theme": "dark", "npmCommand": ["npm"]}))
+    script = tmp_path / "configure-pi.sh"
+    script.write_text(
+        "set -eu\n"
+        "install() {\n"
+        '  if [ "$1" = "-d" ]; then mkdir -p "${@: -1}"; return; fi\n'
+        '  while [ $# -gt 2 ]; do shift; done; cp "$1" "$2"\n'
+        "}\n"
+        f"{configure_pi_package_manager_function()}"
+        f'configure_pi_package_manager "{settings}"\n'
+    )
+
+    subprocess.run(["bash", str(script)], check=True, capture_output=True, text=True)
+
+    written = json.loads(settings.read_text())
+    assert written["npmCommand"] == ["pnpm"]
+    assert written["theme"] == "dark"
+
+
 @needs_jq
 def test_chrome_devtools_is_registered_as_a_headless_user_scope_mcp_server(
     tmp_path: Path,

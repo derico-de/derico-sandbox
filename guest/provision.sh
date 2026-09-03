@@ -41,6 +41,14 @@ rm -rf /var/lib/apt/lists/*
 corepack enable
 corepack prepare pnpm@latest --activate
 
+# Keep image-wide packages outside root's home while exposing their command
+# shims through /usr/local/bin. Runtime installs by dev use its own PNPM_HOME.
+pnpm_global() {
+    PNPM_HOME=/usr/local PATH="/usr/local/bin:$PATH" \
+        pnpm --global-dir /opt/pnpm/global --store-dir /opt/pnpm/store \
+        add --global "$@"
+}
+
 # Yazi, a terminal file manager. Debian has no package for it, so take the
 # upstream release build; upstream ships gnu binaries for these two targets only.
 case "$ARCH" in
@@ -75,7 +83,7 @@ if [ "$ARCH" = "amd64" ]; then
     apt-get update
     apt-get install -y --no-install-recommends google-chrome-stable
     rm -rf /var/lib/apt/lists/*
-    npm install -g chrome-devtools-mcp
+    pnpm_global chrome-devtools-mcp
     google-chrome --version
 else
     printf 'sandboxsh: skipping Google Chrome on %s (amd64 only)\n' "$ARCH" >&2
@@ -112,7 +120,7 @@ chown dev:dev /workspaces
 # PLAYWRIGHT_BROWSERS_PATH instead of a per-user cache, and dev owns it so a
 # project pinned to another Playwright version can add its revision beside the
 # baked-in one from the allowlisted Playwright CDN.
-npm install -g playwright @playwright/mcp
+pnpm_global playwright @playwright/mcp
 install -d -m 0755 -o dev -g dev /opt/ms-playwright
 PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright playwright install --with-deps chromium
 rm -rf /var/lib/apt/lists/*
@@ -125,14 +133,14 @@ playwright --version
 # surface it talks to is per-user, not per-image: the CLI reads SIDESHOW_URL
 # (and SIDESHOW_TOKEN for a deployed instance) at call time, and reaching a
 # surface outside the VM needs that host in `firewall.allow`.
-npm install -g sideshow
+pnpm_global sideshow
 sideshow --version
 
 # Agent skills baked into the image. The host's own skills are mounted read-only
 # at VM creation, but a host that keeps none still gets these. From the pstack
 # plugin: `unslop` strips the tells that mark text as model-written, and `bro`
 # restates the last message without jargon. Each is a single self-contained
-# SKILL.md tracked at main rather than pinned, like the npm globals above. The
+# SKILL.md tracked at main rather than pinned, like the global packages above. The
 # layout mirrors the host mount -- <source>/<skill>/ -- so agent-init links both
 # roots with one function, and a skill of the same name from the host or from
 # inside a sandbox keeps priority. The grep is the build-time smoke test: a 404
@@ -169,6 +177,8 @@ sh /tmp/uv-install.sh
 rm -f /tmp/uv-install.sh
 curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://pi.dev/install.sh | sh
+mkdir -p "$HOME/.pi/agent"
+printf '%s\n' '{"npmCommand":["pnpm"]}' > "$HOME/.pi/agent/settings.json"
 "$HOME/.local/bin/uv" tool install --python 3.12 mistral-vibe
 "$HOME/.local/bin/uv" tool install ruff
 "$HOME/.local/bin/uv" tool install pytest
@@ -184,7 +194,8 @@ pi install npm:@narumitw/pi-firecrawl
 cat > /etc/profile.d/sandboxsh.sh <<'PROFILE'
 export SANDBOXSH=1
 export DEVCONTAINER=true
-export PATH="$HOME/.local/bin:$PATH"
+export PNPM_HOME="$HOME/.local/share/pnpm"
+export PATH="$HOME/.local/bin:$PNPM_HOME/bin:$PATH"
 # pnpm 11 stores a SQLite index beside its package content. Keep it off the
 # virtiofs/9p project mount, where SQLite WAL/mmap may fail with SQLITE_IOERR.
 export PNPM_CONFIG_STORE_DIR="$HOME/.local/share/pnpm/store"
