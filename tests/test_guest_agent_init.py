@@ -95,8 +95,8 @@ def run_link_skills(tmp_path: Path, roots: list[Path], target_dir: Path) -> None
         # The guest runs this as root; the test only cares about the links.
         'install() { mkdir -p "${@: -1}"; }\n'
         "chown() { :; }\n"
-        f'{agent_init_function("clean_skill_links")}'
-        f'{agent_init_function("link_skills")}'
+        f"{agent_init_function('clean_skill_links')}"
+        f"{agent_init_function('link_skills')}"
         f'clean_skill_links "{target_dir}" {root_args}\n'
         f"{calls}"
     )
@@ -344,3 +344,126 @@ def test_an_image_without_playwright_registers_nothing(tmp_path: Path) -> None:
     run_register_playwright(tmp_path, config, browser=False)
 
     assert not config.exists()
+
+
+def run_seed(
+    tmp_path: Path, seed: Path, target: Path, seed_id: str
+) -> "subprocess.CompletedProcess[str]":
+    script = tmp_path / "seed.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        # The guest runs this as root; the test only cares about the copy.
+        "chown() { :; }\n"
+        f"{agent_init_function('seed_agent_state')}"
+        f'seed_agent_state "{seed}" "{target}" "{seed_id}"\n'
+    )
+    return subprocess.run(["bash", str(script)], capture_output=True, text=True)
+
+
+def make_seed(root: Path) -> Path:
+    seed = root / "agent-seed" / "pi"
+    (seed / "agent" / "npm").mkdir(parents=True)
+    (seed / "agent" / "npm" / "package.json").write_text("{}\n")
+    (seed / "agent" / "settings.json").write_text('{"npmCommand":["pnpm"]}\n')
+    return seed
+
+
+def test_installed_packages_are_copied_into_an_empty_volume(tmp_path: Path) -> None:
+    seed = make_seed(tmp_path)
+    target = tmp_path / "agent-creds" / "pi"
+    target.mkdir(parents=True)
+
+    result = run_seed(tmp_path, seed, target, "image-1")
+
+    assert result.returncode == 0, result.stderr
+    assert (target / "agent" / "npm" / "package.json").read_text() == "{}\n"
+    assert (target / ".sandboxsh-seed").read_text() == "image-1\n"
+
+
+def test_state_written_inside_the_sandbox_keeps_priority(tmp_path: Path) -> None:
+    seed = make_seed(tmp_path)
+    target = tmp_path / "agent-creds" / "pi"
+    (target / "agent").mkdir(parents=True)
+    (target / "agent" / "settings.json").write_text('{"theme":"dark"}\n')
+
+    run_seed(tmp_path, seed, target, "image-1")
+
+    assert (target / "agent" / "settings.json").read_text() == '{"theme":"dark"}\n'
+
+
+def test_a_volume_already_seeded_by_this_image_is_not_copied_again(tmp_path: Path) -> None:
+    seed = make_seed(tmp_path)
+    target = tmp_path / "agent-creds" / "pi"
+    target.mkdir(parents=True)
+    (target / ".sandboxsh-seed").write_text("image-1\n")
+
+    run_seed(tmp_path, seed, target, "image-1")
+
+    assert not (target / "agent").exists()
+
+
+def test_a_new_image_seeds_its_added_packages(tmp_path: Path) -> None:
+    seed = make_seed(tmp_path)
+    (seed / "agent" / "npm" / "added.json").write_text("{}\n")
+    target = tmp_path / "agent-creds" / "pi"
+    target.mkdir(parents=True)
+    (target / ".sandboxsh-seed").write_text("image-1\n")
+
+    run_seed(tmp_path, seed, target, "image-2")
+
+    assert (target / "agent" / "npm" / "added.json").read_text() == "{}\n"
+    assert (target / ".sandboxsh-seed").read_text() == "image-2\n"
+
+
+def run_seed_with_failing_cp(
+    tmp_path: Path, seed: Path, target: Path, errors: str
+) -> "subprocess.CompletedProcess[str]":
+    script = tmp_path / "failing-cp.sh"
+    stub = "\n".join(f"  echo {error!r} >&2" for error in errors.splitlines())
+    script.write_text(
+        "set -euo pipefail\n"
+        "chown() { :; }\n"
+        "cp() {\n"
+        f"{stub}\n"
+        "  return 1\n"
+        "}\n"
+        f"{agent_init_function('seed_agent_state')}"
+        f'seed_agent_state "{seed}" "{target}" "image-1"\n'
+    )
+    return subprocess.run(["bash", str(script)], capture_output=True, text=True)
+
+
+def test_a_sandbox_losing_the_race_to_another_sandbox_still_boots(tmp_path: Path) -> None:
+    # Two sandboxes share the volume and flock does not reach the host, so cp
+    # finds a destination missing and then fails to create it. The content is
+    # the same seed either way, so the boot must continue.
+    seed = make_seed(tmp_path)
+    target = tmp_path / "agent-creds" / "pi"
+    target.mkdir(parents=True)
+
+    result = run_seed_with_failing_cp(
+        tmp_path,
+        seed,
+        target,
+        "cp: cannot create regular file '/agent-creds/pi/./agent/npm/a.js': File exists\n"
+        "cp: cannot create directory '/agent-creds/pi/./agent/npm/scss': File exists\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert (target / ".sandboxsh-seed").read_text() == "image-1\n"
+
+
+def test_a_seeding_failure_that_is_not_a_race_fails_the_boot(tmp_path: Path) -> None:
+    seed = make_seed(tmp_path)
+    target = tmp_path / "agent-creds" / "pi"
+    target.mkdir(parents=True)
+
+    result = run_seed_with_failing_cp(
+        tmp_path, seed, target, "cp: error writing '/agent-creds/pi/./a': No space left on device\n"
+    )
+
+    assert result.returncode != 0
+    assert "No space left on device" in result.stderr
+    # A volume that was not seeded must not be stamped as seeded.
+    assert not (target / ".sandboxsh-seed").exists()

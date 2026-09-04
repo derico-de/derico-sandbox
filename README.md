@@ -588,8 +588,9 @@ The `playwright` CLI is on `PATH` and the Chromium build is shared through
 `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, owned by `dev`. A project pinned
 to a different Playwright version installs its own revision there with
 `pnpm exec playwright install`, and `pnpm exec playwright install firefox webkit` adds the
-other engines; `cdn.playwright.dev` is on the built-in allowlist, so both work
-without a firewall change.
+other engines; Playwright's primary and fallback download mirrors are on the
+built-in allowlist, so both work without a firewall change. Node prefers IPv4
+for these downloads because an Incus bridge may not provide IPv6 egress.
 
 Both browsers are subject to the same ACL as everything else in the VM: they
 reach `localhost` services in the sandbox freely, and any external site they

@@ -3,16 +3,45 @@
 set -euo pipefail
 
 HOME_DEV=/home/dev
+
+# The image seeds an agent's installed packages into the shared volume once per
+# image build, recorded in a stamp beside them. Repeating the copy on every boot
+# walks tens of thousands of pnpm files over virtiofs for nothing, and the lock
+# the caller takes does not help: flock on that mount stays inside this VM,
+# so two sandboxes starting at once both copy. The loser then sees
+# "File exists" for entries cp had just found missing, which used to abort
+# the whole boot. That race is benign -- the other run writes the same seed --
+# so only report errors that are something else.
+seed_agent_state() {
+    seed="$1"
+    target="$2"
+    seed_id="$3"
+    stamp="$target/.sandboxsh-seed"
+    if [ ! -d "$seed" ]; then
+        return 0
+    fi
+    if [ "$(cat "$stamp" 2>/dev/null || true)" = "$seed_id" ]; then
+        return 0
+    fi
+    unexpected="$(cp -a --update=none "$seed/." "$target/" 2>&1 >/dev/null |
+        grep -v ': File exists$' || true)"
+    if [ -n "$unexpected" ]; then
+        printf '%s\n' "$unexpected" >&2
+        return 1
+    fi
+    printf '%s\n' "$seed_id" > "$stamp"
+    chown dev:dev "$stamp"
+}
+
 if mountpoint -q /agent-creds 2>/dev/null; then
     exec 9>/agent-creds/.sandboxsh-init.lock
     flock 9
 
+    image_seed_id="$(cat /opt/sandboxsh/agent-seed/.seed-id 2>/dev/null || true)"
     for agent in claude pi vibe; do
         target="/agent-creds/$agent"
         install -d -m 0700 -o dev -g dev "$target"
-        if [ -d "/opt/sandboxsh/agent-seed/$agent" ]; then
-            cp -an "/opt/sandboxsh/agent-seed/$agent/." "$target/"
-        fi
+        seed_agent_state "/opt/sandboxsh/agent-seed/$agent" "$target" "$image_seed_id"
         chown dev:dev "$target"
         rm -rf "$HOME_DEV/.$agent"
         ln -s "$target" "$HOME_DEV/.$agent"

@@ -159,7 +159,11 @@ container-runtime lockdown that the bridge rule works around.
 
 The shared filesystem volume is managed by the Incus storage pool, not a host
 home bind mount. `sandboxsh-agent-init` uses `flock` while creating and seeding
-agent directories. Home paths are symlinked after the volume is mounted.
+agent directories, but that lock stays inside one VM: the guest kernel does not
+carry it to the host, so two sandboxes can seed the volume at the same time.
+Seeding is therefore idempotent and stamped -- the image's agent packages are
+copied once per image build, and a file already on the volume always wins.
+Home paths are symlinked after the volume is mounted.
 
 This is intentionally a cross-project trust domain. Project-local credentials
 remain on each root disk and disappear on `destroy`/`recreate`.

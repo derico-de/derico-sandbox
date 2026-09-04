@@ -20,6 +20,14 @@ def test_firecrawl_api_is_a_builtin_endpoint() -> None:
     assert FirewallEntry("api.firecrawl.dev", (443,)) in security.DEFAULT_ENDPOINTS
 
 
+def test_playwright_download_mirrors_are_builtin_endpoints() -> None:
+    assert FirewallEntry("cdn.playwright.dev", (443,)) in security.DEFAULT_ENDPOINTS
+    assert (
+        FirewallEntry("playwright.download.prss.microsoft.com", (443,))
+        in security.DEFAULT_ENDPOINTS
+    )
+
+
 def test_acl_is_default_deny_with_only_resolved_destinations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

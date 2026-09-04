@@ -37,8 +37,9 @@ DEFAULT_ENDPOINTS: tuple[FirewallEntry, ...] = (
     FirewallEntry("deb.nodesource.com", (443,)),
     FirewallEntry("dl.google.com", (443,)),
     # Playwright browser builds; the image bakes in Chromium, and a project
-    # pinned to another Playwright version downloads its revision from here.
+    # pinned to another Playwright version may use either download mirror.
     FirewallEntry("cdn.playwright.dev", (443,)),
+    FirewallEntry("playwright.download.prss.microsoft.com", (443,)),
     FirewallEntry("download.docker.com", (443,)),
     FirewallEntry("registry-1.docker.io", (443,)),
     FirewallEntry("auth.docker.io", (443,)),
