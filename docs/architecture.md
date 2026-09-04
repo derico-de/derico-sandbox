@@ -56,20 +56,48 @@ external paths need an out-of-repository approval.
 
 ### Golden image
 
-`sandboxsh image build`:
+`sandboxsh image build` (`src/sandboxsh/imagebuild.py`) runs the stage scripts
+in `guest/stages/` as an ordered chain and caches every finished stage:
 
-1. initializes a stopped temporary VM from `images:debian/13/cloud`;
-2. attaches a default-deny build ACL before first boot, then waits for
-   `incus-agent` and cloud-init;
-3. pushes and runs `guest/provision.sh`;
-4. installs Docker/Compose, toolchains, agents, and security defaults;
-5. removes transient state and runs `cloud-init clean`;
-6. stops and publishes the VM as `sandboxsh/base`;
-7. deletes the temporary builder.
+1. pins the source alias (`images:debian/13/cloud`) to a VM-image fingerprint
+   in `~/.cache/sandboxsh/build/manifest.json`; only `--refresh` re-resolves;
+2. computes one key per stage from the parent key, the script hash, the
+   stage's declared inputs (uid/gid, helper script hashes), the refresh
+   generation, and the `SANDBOXSH_BUILD_ALLOW` hosts;
+3. exits when the published image already carries the final key (no VM, no
+   sudo); otherwise lists the stopped `sandboxsh-cache-<key>` VMs and picks the
+   deepest matching one;
+4. for each remaining stage: creates a worker `sandboxsh-build-<key>-<rand>`
+   by copying the parent entry (a copy-on-write clone on Btrfs, ZFS, and LVM
+   thin) or by `incus init` from the pinned source for the first stage;
+   attaches the default-deny build ACL before first boot; waits for
+   `incus-agent` and cloud-init; pins the allowlist; pushes and runs the stage
+   script with streamed output; unpins; stops; stamps `user.sandboxsh.cache.*`
+   and renames the worker into its cache name (the atomic visibility point);
+5. publishes the last entry as the alias with `user.sandboxsh.build_key`,
+   `user.sandboxsh.source`, `user.sandboxsh.stages`, and `user.sandboxsh.disk`
+   properties, then deletes the build ACL. The entry stays for the next build.
+
+The first stage disables cloud-init after its own first boot and the finalize
+stage re-enables and cleans it, so copied workers do not re-run cloud-init as
+new machines while every project VM still gets a fresh first boot. The stage
+loader asserts those lines exist. A failed stage deletes its worker and leaves
+the parent entry, so the retry starts there; `SANDBOXSH_KEEP_BUILDER=1` keeps
+the worker and the ACL for inspection instead. Every build and `image cache
+prune` on the host holds one `flock`, because the build ACL is a single shared
+object and prune must not delete an entry a build is about to copy.
 
 The published alias is reusable by every project in the user's restricted Incus
 project. Rebuilding the alias does not mutate existing persistent VMs; use
-`sandboxsh recreate` per project to consume it.
+`sandboxsh recreate` per project to consume it. `create_instance` refuses a
+`resources.disk` below the image's `user.sandboxsh.disk` before Incus fails on
+a block volume that cannot shrink.
+
+The build workflow lives outside `Incus` while the project-VM workflow
+(`create_instance`) stays inside it. That asymmetry is deliberate for now:
+the build loop is the larger and more testable piece, and `Incus` remains the
+only subprocess owner, growing thin verbs (`copy_instance`, `rename_instance`,
+`list_instances`, `resolve_vm_image`, `image_property`, `publish`) for it.
 
 ### Project VM
 

@@ -15,6 +15,24 @@ from .errors import ConfigError
 CONFIG_NAME = ".sandboxsh.json"
 _NAME_RE = re.compile(r"[^a-zA-Z0-9.-]+")
 _SIZE_RE = re.compile(r"^[1-9][0-9]*(?:[KMGTPE]i?B?|[kmgtpe])?$")
+
+
+def parse_size(value: str) -> int:
+    """Bytes for a size string in the form `_SIZE_RE` accepts.
+
+    Incus reads `GiB` as binary and `GB`/`G` as decimal; the same rule here
+    keeps a comparison between two configured sizes consistent with what Incus
+    would allocate for each of them.
+    """
+    match = re.fullmatch(r"([1-9][0-9]*)([KMGTPEkmgtpe]?)(i?)(B?)", value)
+    if match is None:
+        raise ConfigError(f"invalid size value: {value}")
+    number, unit, binary, _ = match.groups()
+    base = 1024 if binary else 1000
+    exponent = "kmgtpe".index(unit.lower()) + 1 if unit else 0
+    return int(number) * base**exponent
+
+
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 

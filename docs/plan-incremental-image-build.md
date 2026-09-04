@@ -1,9 +1,10 @@
 # Plan: incremental `sandboxsh image build`
 
-Status: proposed (2026-09-04), reviewed, not yet implemented. Independently
-reviewed by four reviewers (critic, architect, security, developer experience);
-their findings are folded in and listed in section 12. Phase 0 measurements
-are recorded in section 9.
+Status: phases 1 and 2 implemented (2026-09-04) in `src/sandboxsh/imagebuild.py`
+and `guest/stages/`; phase 3 shelved and phase 4 open, as decided in section 9.
+Independently reviewed by four reviewers (critic, architect, security,
+developer experience); their findings are folded in and listed in section 12.
+Phase 0 measurements are recorded in section 9.
 
 ## 1. Recommendation in short
 

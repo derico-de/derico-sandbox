@@ -32,26 +32,32 @@ Existing plumbing already points this way:
 
 ## Design: four layers
 
-### Layer 1 — trim `provision.sh` to the core
+### Layer 1 — core stages
 
-`guest/provision.sh` (or a renamed `provision-core.sh`) keeps only mechanism
-plus near-universal basics: git, curl, build-essential, python3, uv, the
-agents, Docker, Node/pnpm. Everything Plone/LDAP/cairo-specific moves into a
-feature script (layer 2).
+The build is already an ordered chain of stage scripts in `guest/stages/`
+(see `docs/plan-incremental-image-build.md`), each cached as a stopped VM keyed
+by its script and inputs. The core stages keep only mechanism plus
+near-universal basics: git, curl, build-essential, python3, uv, the agents,
+Docker, Node/pnpm. Everything Plone/LDAP/cairo-specific moves out of
+`10-base.sh` and `50-agents.sh` into an optional stage (layer 2).
 
-### Layer 2 — host-side build features (baked into the image)
+### Layer 2 — optional stages (baked into the image)
 
-A directory of small, self-contained feature scripts:
+A directory of small, self-contained optional stage scripts, named like the
+core ones so they sort into the chain before `90-finalize.sh`:
 
 ```text
 guest/features/
-  node.sh
-  plone.sh
-  pdf-export.sh
+  60-node.sh
+  60-plone.sh
+  60-pdf-export.sh
   ...
 ```
 
-Which features get baked into an image is chosen by *host* configuration:
+`load_stages(stages_dir, extra=...)` already inserts such scripts before
+finalize; an optional stage is one more link in the key chain, so selecting
+or editing one rebuilds only it and the stages after it. Which optional stages
+get baked into an image is chosen by *host* configuration:
 
 - CLI: `sandboxsh image build --features node,plone`
 - Host config `~/.config/sandboxsh/build.json`:
@@ -112,13 +118,13 @@ a manual escape hatch.
 
 ## Implementation sketch (layers 1–3, one pass)
 
-1. Split `guest/provision.sh` into core + `guest/features/*.sh`; the current
-   Plone/LDAP/PDF/mistral-vibe/pi-plugin content becomes `plone.sh` (and
-   friends).
-2. `incus.py` `build_image()` (~line 886): resolve the feature list from
-   `--features` and `~/.config/sandboxsh/build.json`, push the selected
-   scripts into the builder, run them after the core script, and record the
-   feature set in the image description for `image status`.
+1. Move the Plone/LDAP/PDF/mistral-vibe/pi-plugin content out of
+   `guest/stages/10-base.sh` and `50-agents.sh` into `guest/features/60-plone.sh`
+   (and friends).
+2. `imagebuild.py` `ImageBuilder.stages()`: resolve the feature list from
+   `--features` and `~/.config/sandboxsh/build.json`, pass the selected
+   scripts to `load_stages(extra=...)`, and record the feature set in the
+   `user.sandboxsh.stages` image property `image status` already reads.
 3. `config.py`: parse the `setup` block (new allowed top-level key, typed
    validation like `ports`/`firewall`), expose a `setup_fingerprint`.
 4. Create/recreate/up path: after `instance-init`, compare the stamped setup

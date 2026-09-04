@@ -59,7 +59,7 @@ On a Debian/Ubuntu-style host, run the installer directly from GitHub:
 curl -fsSL https://raw.githubusercontent.com/derico-de/derico-sandbox/main/install.sh | bash
 # Log out/in if it added you to the `incus` group.
 sandboxsh doctor
-sandboxsh image build       # one reusable image; takes several minutes
+sandboxsh image build       # one reusable image; the first build takes minutes, later ones seconds
 ```
 
 Alternatively, clone the repository and run `./install.sh`. Pass `--no-deps` to
@@ -248,7 +248,9 @@ different CloudFront edges to host and guest and the guest hangs until its conne
 timeout. The pin is for availability; the ACL remains the enforcement point.
 Run `refresh-firewall` after CDN rotation. The golden-image
 builder is protected by the same ACL; add an exceptional build-only hostname with
-`SANDBOXSH_BUILD_ALLOW=host1,host2 sandboxsh image build`. Wildcards are
+`SANDBOXSH_BUILD_ALLOW=host1,host2 sandboxsh image build`. The extra hosts are
+part of every cached build stage's key, so a stage built under a widened
+allowlist is never reused by a build that did not ask for it. Wildcards are
 not accepted. Private/RFC1918 destinations are rejected unless the endpoint sets
 `"allow_private": true`; that expanded authority is highlighted during approval.
 Loopback, link-local/metadata, multicast, unspecified, and reserved destinations
@@ -310,10 +312,12 @@ hold up the boot. A firewall reload that flushes the chains still drops the rule
 the sandbox — the ACL is enforced in nftables' `bridge incus` table, which an
 accept in `ip filter` cannot override.
 
-`sandboxsh image build` streams the provisioning output, so a blocked endpoint
-appears as the URL that timed out. `SANDBOXSH_KEEP_BUILDER=1` keeps the builder VM
-and its ACL when provisioning fails, so the same request can be retried from
-inside the VM under the ACL that blocked it. Delete the builder afterwards.
+`sandboxsh image build` streams each stage's output, so a blocked endpoint
+appears as the URL that timed out. `SANDBOXSH_KEEP_BUILDER=1` keeps the failed
+stage's worker VM (`sandboxsh-build-<key>-<random>`) and the build ACL, so the
+same request can be retried from inside the VM under the ACL that blocked it.
+The error names the worker; delete it afterwards, or let the next build remove
+it (it says so when it does).
 
 To open a development server, declare its guest port and bind the service to
 `0.0.0.0` inside the VM:
@@ -436,7 +440,7 @@ under `/opt/sandboxsh/image-skills` and are linked into `~/.claude/skills`,
 `~/.agents/skills`, and `~/.vibe/skills` at every boot by the same code that
 links host skills, host root first. A skill installed inside the sandbox wins,
 then a host skill of that name, then the image copy. Remove one for a single sandbox
-by deleting its symlink, or for good by dropping it from `guest/provision.sh`
+by deleting its symlink, or for good by dropping it from `guest/stages/50-agents.sh`
 and rebuilding.
 
 ## Host agent instructions
@@ -494,6 +498,67 @@ Rebuild the alias after changing anything under `guest/`:
 sandboxsh image build
 sandboxsh recreate
 ```
+
+### Incremental builds
+
+The build is a chain of stage scripts under `guest/stages/`, run in order as
+root inside a disposable worker VM:
+
+| Stage | Installs |
+|-------|----------|
+| `10-base` | Debian packages, locales, editors |
+| `20-docker-node` | Docker Engine and Compose, Node.js 24, pnpm |
+| `30-user` | the `dev` account matched to your uid/gid, sudoers, `/workspaces` |
+| `40-browser` | Google Chrome, Chrome DevTools MCP, Playwright with Chromium, Yazi |
+| `50-agents` | sideshow, image skills, uv, Claude Code, pi and its extensions, uv tools |
+| `90-finalize` | git hooks, login profile, agent seed, guest helpers, cleanup, smoke checks |
+
+Every finished stage is kept as a stopped VM named `sandboxsh-cache-<key>` in
+your Incus project. The key hashes the stage script, its inputs (the pinned
+source image, your uid/gid, the guest helper scripts, `SANDBOXSH_BUILD_ALLOW`),
+and the key of the stage before it. The next build reuses the deepest matching
+entry and rebuilds only what follows; a build whose final key is already
+stamped on the published image exits in seconds without creating a VM or
+asking for a password. The output says why each stage is rebuilt:
+
+```text
+source   debian/13/cloud  a046182b (pinned 2026-09-04)
+hit      10-base          a1b2c3d4a1b2c3d4  age 3d
+hit      20-docker-node   b2c3d4e5b2c3d4e5  age 3d
+miss     30-user          c3d4e5f6c3d4e5f6  script changed
+miss     40-browser       d4e5f6a7d4e5f6a7  parent changed
+...
+publish  sandboxsh/base   build_key f6a7b8c9f6a7b8c9 (4 of 6 stages rebuilt, 7m12s)
+```
+
+Installers that fetch "latest" (apt repositories, pnpm, Claude Code, pi, uv,
+Yazi, the image skills) are not part of the key, so a cache hit deliberately
+does not pick up a new upstream release. Choose when it does:
+
+```bash
+sandboxsh image build --refresh                # re-pin the source image, rebuild every network-facing stage
+sandboxsh image build --refresh-from 50-agents # new agent releases without redoing apt, Docker, or Chrome
+sandboxsh image build --no-cache               # rebuild everything, replacing the cached entries
+sandboxsh image build --dry-run                # show the plan and change nothing
+sandboxsh image build --no-publish             # iterate on stages without paying the publish
+sandboxsh image status                         # published build key; which stage a build would start from
+sandboxsh image cache list                     # every entry with age and chain membership
+sandboxsh image cache prune                    # drop entries no current or previous-generation build uses
+```
+
+A reused entry older than `SANDBOXSH_CACHE_MAX_AGE_DAYS` (default 30) prints
+a warning; older than three times that refuses to build unless you pass
+`--refresh` or `--allow-stale`, so the base OS, Docker, and Chrome always get
+a forced refresh point. `--refresh` counts up a generation stored in
+`~/.cache/sandboxsh/build/manifest.json` together with the pinned source
+fingerprint; if a refresh brought in a bad release, `sandboxsh image build
+--generation <previous>` rolls back to the earlier chain, whose entries stay
+until pruned. Losing the manifest only costs one full build. Builds and prunes
+on one host take a single lock (`--no-wait` fails instead of queueing).
+
+The first build after upgrading from a release without the stage cache runs
+every stage. A leftover `sandboxsh-image-builder-<uid>` VM from that release
+is reported by `sandboxsh doctor` and `image cache list`, never deleted for you.
 
 ## Browser automation
 
@@ -582,7 +647,7 @@ tests allow/deny egress and declared ingress, then destroys the VM.
 ## Project layout
 
 - `src/sandboxsh/` — Click CLI, configuration, approvals, ACL and Incus client
-- `guest/` — golden-image and per-instance provisioning scripts
+- `guest/` — golden-image stage scripts (`stages/`) and per-instance init scripts
 - `install.sh` — host bootstrap using the restricted Incus user service
 - `docs/architecture.md` — design and control-plane details
 - `tests/` — configuration, security-policy, and CLI tests

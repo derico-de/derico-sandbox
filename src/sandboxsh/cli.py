@@ -12,6 +12,7 @@ import click
 from . import __version__
 from .config import CONFIG_NAME, ProjectConfig, find_config, load_config, sanitize_name
 from .errors import SandboxshError
+from .imagebuild import DEFAULT_ALIAS, DEFAULT_SOURCE, ImageBuilder
 from .incus import CREDS_VOLUME, DEFAULT_POOL, Incus
 from .process import Runner
 from .publish import INSTALL_HELPER_HINT, Endpoint, Publisher
@@ -46,6 +47,9 @@ class Context:
 
     def config(self) -> ProjectConfig:
         return load_config(self.config_path or find_config())
+
+    def image_builder(self) -> ImageBuilder:
+        return ImageBuilder(self.incus, echo=click.echo)
 
 
 @click.group(
@@ -555,29 +559,150 @@ def image_group() -> None:
 
 
 @image_group.command("build")
-@click.option("--alias", "image", default="sandboxsh/base", show_default=True)
-@click.option("--source", default="images:debian/13/cloud", show_default=True)
+@click.option("--alias", "image", default=DEFAULT_ALIAS, show_default=True)
+@click.option("--source", default=DEFAULT_SOURCE, show_default=True)
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help="Re-pin the source image and rebuild every network-facing stage.",
+)
+@click.option(
+    "--refresh-from",
+    metavar="STAGE",
+    help="Rebuild from this stage (for example 50-agents) and everything after it.",
+)
+@click.option("--no-cache", is_flag=True, help="Ignore cache entries; still record new ones.")
+@click.option("--no-publish", is_flag=True, help="Build the stage chain without publishing.")
+@click.option("--allow-stale", is_flag=True, help="Reuse entries beyond the age ceiling.")
+@click.option("--dry-run", is_flag=True, help="Print the plan and change nothing.")
+@click.option(
+    "--generation",
+    type=int,
+    help="Restore this refresh generation (rollback for a bad --refresh).",
+)
+@click.option("--no-wait", is_flag=True, help="Fail instead of waiting for another build.")
 @click.pass_obj
 @handled
-def image_build_command(context: Context, image: str, source: str) -> None:
-    """Build and publish the reusable Docker/agent-enabled VM image."""
+def image_build_command(
+    context: Context,
+    image: str,
+    source: str,
+    refresh: bool,
+    refresh_from: str | None,
+    no_cache: bool,
+    no_publish: bool,
+    allow_stale: bool,
+    dry_run: bool,
+    generation: int | None,
+    no_wait: bool,
+) -> None:
+    """Build and publish the reusable Docker/agent-enabled VM image.
+
+    Every finished stage is cached as a stopped VM; unchanged inputs make this a
+    no-op in seconds, and an edit rebuilds only the stages after it.
+    """
     context.incus.verify_host_access()
-    click.echo(f"Building {image} from {source}; this can take several minutes.")
-    policy = context.incus.build_image(image=image, source=source)
-    _report_unresolved_defaults(policy)
-    click.echo(f"Published {image}.")
+    report = context.image_builder().build(
+        image,
+        source,
+        refresh=refresh,
+        refresh_from=refresh_from,
+        no_cache=no_cache,
+        generation=generation,
+        allow_stale=allow_stale,
+        publish=not no_publish,
+        dry_run=dry_run,
+        wait=not no_wait,
+        before_run=lambda plan: _prime_sudo(
+            context, "apply the image build's host-enforced firewall"
+        ),
+    )
+    if report.policy is not None:
+        _report_unresolved_defaults(report.policy)
+    if report.dry_run or report.noop:
+        return
+    if report.published:
+        click.echo(f"Published {image}.")
+    else:
+        click.echo(f"Built {image} without publishing; rerun without --no-publish to publish.")
 
 
 @image_group.command("status")
-@click.option("--alias", "image", default="sandboxsh/base", show_default=True)
+@click.option("--alias", "image", default=DEFAULT_ALIAS, show_default=True)
+@click.option("--source", default=DEFAULT_SOURCE, show_default=True)
 @click.pass_obj
 @handled
-def image_status_command(context: Context, image: str) -> None:
-    """Check whether the reusable image exists."""
+def image_status_command(context: Context, image: str, source: str) -> None:
+    """Show the published build key and whether the stage chain is up to date."""
     context.incus.verify_host_access()
     if not context.incus.image_exists(image):
         raise SandboxshError(f"image {image!r} is absent")
-    click.echo(f"image {image!r} is available")
+    for line in context.image_builder().status(image, source):
+        click.echo(line)
+
+
+@image_group.group("cache")
+def image_cache_group() -> None:
+    """Inspect and prune cached build stages."""
+
+
+@image_cache_group.command("list")
+@click.option("--source", default=DEFAULT_SOURCE, show_default=True)
+@click.pass_obj
+@handled
+def image_cache_list_command(context: Context, source: str) -> None:
+    """List cached stages with age and chain membership."""
+    context.incus.verify_host_access()
+    builder = context.image_builder()
+    rows = builder.cache_rows(source)
+    columns = (
+        ("key", "KEY"),
+        ("stage", "STAGE"),
+        ("parent", "PARENT"),
+        ("age", "AGE"),
+        ("chain", "CHAIN"),
+        ("build_allow", "BUILD-ALLOW"),
+        ("instance", "INSTANCE"),
+    )
+    widths = {
+        field: max([len(title), *(len(row[field]) for row in rows)]) for field, title in columns
+    }
+    click.echo("  ".join(title.ljust(widths[field]) for field, title in columns).rstrip())
+    for row in rows:
+        click.echo("  ".join(row[field].ljust(widths[field]) for field, _ in columns).rstrip())
+    if not rows:
+        click.echo("(no cache entries)")
+    for legacy in builder.cache.legacy_builders():
+        click.echo(
+            f"legacy builder {legacy} is left over from a build before stage caching; "
+            f"remove it with `incus --project {context.incus.project} delete {legacy} --force`"
+        )
+
+
+@image_cache_group.command("prune")
+@click.option("--source", default=DEFAULT_SOURCE, show_default=True)
+@click.option(
+    "--keep-generations",
+    type=click.IntRange(0),
+    default=1,
+    show_default=True,
+    help="Earlier refresh generations whose entries stay.",
+)
+@click.option("--all", "all_", is_flag=True, help="Keep only the current chain.")
+@click.option("--no-wait", is_flag=True, help="Fail instead of waiting for a running build.")
+@click.pass_obj
+@handled
+def image_cache_prune_command(
+    context: Context, source: str, keep_generations: int, all_: bool, no_wait: bool
+) -> None:
+    """Delete cached stages that no current or kept-generation build would reuse."""
+    context.incus.verify_host_access()
+    removed = context.image_builder().prune(
+        source, keep_generations=keep_generations, all_=all_, wait=not no_wait
+    )
+    for key in removed:
+        click.echo(f"removed  {key}")
+    click.echo(f"Pruned {len(removed)} cache entr{'y' if len(removed) == 1 else 'ies'}.")
 
 
 @cli.group("credentials")
@@ -652,6 +777,12 @@ def doctor_command(context: Context) -> None:
             else:
                 click.echo(f"FAIL {remedy}")
                 failures.append("bridge-forwarding")
+        for legacy in context.image_builder().cache.legacy_builders():
+            click.echo(
+                f"WARN legacy image builder {legacy} is left over from a build before "
+                f"stage caching; remove it with `incus --project {project} delete "
+                f"{legacy} --force`"
+            )
     # Tailnet publishing is optional, so its absence is reported without
     # failing a host that only ever reaches sandboxes at their VM address.
     if not context.publisher.helper_available():

@@ -7,10 +7,12 @@ import json
 import os
 import shlex
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from .config import FirewallEntry, Mount, ProjectConfig, Resources
+from .config import Mount, ProjectConfig, parse_size
 from .errors import SandboxshError
 from .process import Result, Runner
 from .security import AclPolicy, build_acl_policy
@@ -54,6 +56,16 @@ PIN_END = "# END sandboxsh allowlist"
 # Interfaces the guest creates for its own containers. They carry a global IPv4
 # that means nothing to the host, so they must never be taken for the VM address.
 GUEST_LOCAL_INTERFACES = ("docker", "br-", "veth", "virbr", "cni", "flannel")
+
+# Image property the builder stamps with the root-disk size of its template.
+IMAGE_DISK_PROPERTY = "user.sandboxsh.disk"
+
+
+@dataclass(frozen=True)
+class ResolvedImage:
+    fingerprint: str
+    architecture: str
+    serial: str = ""
 
 
 def host_skill_sources() -> tuple[tuple[str, Path], ...]:
@@ -287,6 +299,95 @@ class Incus:
         if self._not_found(result):
             return False
         raise self._probe_error(f"image {image}", result)
+
+    def list_instances(self, prefix: str) -> list[dict]:
+        """Instance records whose names start with `prefix`."""
+        result = self.command("list", prefix, "--format=json", check=False)
+        if result.returncode:
+            raise self._probe_error(f"instances {prefix}*", result)
+        try:
+            records = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise SandboxshError("Incus returned invalid instance data") from exc
+        return [
+            record
+            for record in records
+            if isinstance(record, dict) and str(record.get("name", "")).startswith(prefix)
+        ]
+
+    def copy_instance(self, source: str, target: str) -> None:
+        self.command("copy", source, target)
+
+    def rename_instance(self, source: str, target: str) -> None:
+        self.command("rename", source, target)
+
+    def delete_instance(self, instance: str, *, check: bool = False) -> None:
+        self.command("delete", instance, "--force", check=check)
+
+    def set_config(self, instance: str, values: Mapping[str, str]) -> None:
+        self.command(
+            "config", "set", instance, *(f"{key}={value}" for key, value in values.items())
+        )
+
+    def image_property(self, image: str, key: str) -> str | None:
+        """An image property, or None when the image or the property is absent."""
+        result = self.command("image", "get-property", image, key, check=False)
+        if result.returncode == 0:
+            return result.stdout.strip()
+        if self._not_found(result):
+            return None
+        raise self._probe_error(f"image {image} property {key}", result)
+
+    def resolve_vm_image(self, source: str) -> ResolvedImage:
+        """Pin an image alias to the VM-image fingerprint it names right now.
+
+        The remote answers first; when it is unreachable, the copy Incus already
+        caches for that alias is the best available pin.
+        """
+        result = self.command("image", "info", source, "--vm", check=False)
+        if result.returncode == 0:
+            fields = {}
+            for line in result.stdout.splitlines():
+                key, separator, value = line.partition(":")
+                if separator and not line.startswith(" "):
+                    fields[key.strip().lower()] = value.strip()
+                elif separator and key.strip().lower() == "serial":
+                    fields["serial"] = value.strip()
+            fingerprint = fields.get("fingerprint", "")
+            if fingerprint:
+                return ResolvedImage(
+                    fingerprint, fields.get("architecture", ""), fields.get("serial", "")
+                )
+        remote, separator, alias = source.partition(":")
+        listing = self.command("image", "list", "--format=json", check=False)
+        if listing.returncode == 0 and separator:
+            try:
+                images = json.loads(listing.stdout)
+            except json.JSONDecodeError:
+                images = []
+            for image in images:
+                update = image.get("update_source") or {}
+                if image.get("type") == "virtual-machine" and update.get("alias") == alias:
+                    return ResolvedImage(
+                        str(image.get("fingerprint", "")),
+                        str(image.get("architecture", "")),
+                        str((image.get("properties") or {}).get("serial", "")),
+                    )
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown Incus error"
+        raise SandboxshError(
+            f"cannot resolve source image {source!r} to a VM image: {detail}; the remote "
+            "must be reachable once so the build can pin a fingerprint"
+        )
+
+    def publish(self, instance: str, alias: str, properties: Mapping[str, str]) -> None:
+        self.command(
+            "publish",
+            instance,
+            "--alias",
+            alias,
+            "--reuse",
+            *(f"{key}={value}" for key, value in properties.items()),
+        )
 
     def volume_exists(self, name: str, pool: str = DEFAULT_POOL) -> bool:
         result = self.command("storage", "volume", "show", pool, name, check=False)
@@ -625,6 +726,7 @@ class Incus:
             raise SandboxshError(
                 f"base image {config.image!r} is missing; run `sandboxsh image build`"
             )
+        self._check_disk_fits(config)
         self.command(
             "init",
             config.image,
@@ -739,6 +841,26 @@ class Incus:
             except Exception as cleanup_error:
                 error.add_note(f"ACL cleanup also failed: {cleanup_error}")
             raise
+
+    def _check_disk_fits(self, config: ProjectConfig) -> None:
+        """Refuse a root disk smaller than the image's before Incus does, in plain words.
+
+        Block volumes cannot shrink, so Incus fails such an init with
+        'Block volumes cannot be shrunk' after unpacking the image.
+        """
+        template = self.image_property(config.image, IMAGE_DISK_PROPERTY)
+        if not template:
+            return
+        try:
+            if parse_size(config.resources.disk) >= parse_size(template):
+                return
+        except SandboxshError:
+            return
+        raise SandboxshError(
+            f"resources.disk {config.resources.disk} is smaller than the {template} root "
+            f"disk of image {config.image!r}; a VM disk can only grow, so set "
+            f"resources.disk to at least {template}"
+        )
 
     def _configure_git(self, instance: str) -> None:
         for key in ("user.name", "user.email", "init.defaultBranch", "pull.rebase"):
@@ -922,122 +1044,9 @@ class Incus:
         *,
         image: str = "sandboxsh/base",
         source: str = "images:debian/13/cloud",
-    ) -> AclPolicy:
-        builder = f"sandboxsh-image-builder-{os.getuid()}"
-        extra_hosts = tuple(
-            FirewallEntry(host.strip())
-            for host in os.environ.get("SANDBOXSH_BUILD_ALLOW", "").split(",")
-            if host.strip()
-        )
-        build_config = ProjectConfig(
-            path=Path.home() / ".config/sandboxsh/image-builder.json",
-            name="image-builder",
-            workdir="/root",
-            mounts=(),
-            ports=(),
-            firewall_enabled=True,
-            firewall_allow=(
-                FirewallEntry("claude.ai"),
-                # claude.ai/install.sh fetches the actual binary from here.
-                FirewallEntry("downloads.claude.ai"),
-                FirewallEntry("pi.dev"),
-                FirewallEntry("storage.googleapis.com"),
-                *extra_hosts,
-            ),
-            resources=Resources(cpus=4, memory="8GiB", disk="30GiB"),
-            image=source,
-            agent_credentials=False,
-        )
-        self.command("delete", builder, "--force", check=False)
-        self.command(
-            "init",
-            source,
-            builder,
-            "--vm",
-            "--config",
-            "limits.cpu=4",
-            "--config",
-            "limits.memory=8GiB",
-            "--device",
-            "root,size=30GiB",
-        )
-        failure: Exception | None = None
-        policy: AclPolicy | None = None
-        try:
-            # Supply-chain scripts run only after the same host-enforced ACL used
-            # for project VMs is attached to the stopped builder.
-            policy = self.apply_acl(build_config)
-            self.attach_acl(build_config, instance=builder)
-            self.command("start", builder)
-            self.wait_for_agent(builder, timeout=600)
-            self.command("exec", builder, "--", "cloud-init", "status", "--wait", check=False)
-            self.pin_allowlist(policy, instance=builder)
-            guest_dir = Path(__file__).parent / "guest"
-            if not guest_dir.is_dir():
-                # Editable source install; wheel installs use the packaged path.
-                guest_dir = Path(__file__).parents[2] / "guest"
-            for filename in ("provision.sh", "agent-init.sh", "instance-init.sh"):
-                source_path = guest_dir / filename
-                if not source_path.is_file():
-                    raise SandboxshError(f"packaged guest script is missing: {source_path}")
-                self.command("file", "push", str(source_path), f"{builder}/root/{filename}")
-            # Provisioning is the long, supply-chain-facing step. Stream it so a
-            # blocked endpoint is visible as the URL that failed, not just the
-            # last line of a captured buffer. Streaming inherits the caller's
-            # terminal, so refuse stdin and the pty that comes with it: piped
-            # installers must take their non-interactive defaults, never sit on
-            # a prompt inside an unattended build.
-            self.command(
-                "exec",
-                builder,
-                "--disable-stdin",
-                "--",
-                "bash",
-                "/root/provision.sh",
-                str(os.getuid()),
-                str(os.getgid()),
-                capture=False,
-            )
-            # The pins belong to this build, not to every VM cloned from the image.
-            self.unpin_allowlist(builder)
-            self.command("exec", builder, "--", "cloud-init", "clean", "--logs", "--machine-id")
-            # A forced stop is a power cut. Flush the guest page cache first so
-            # provisioning's final writes -- the init helpers land seconds before
-            # this point -- are on disk in the image that publish snapshots.
-            self.command("exec", builder, "--", "sync")
-            self.command("stop", builder, "--force")
-            self.command("publish", builder, "--alias", image, "--reuse")
-        except Exception as error:
-            failure = error
-            raise
-        finally:
-            # An endpoint the host could not resolve is omitted from the ACL and
-            # the pins, which the guest only ever sees as a connect timeout. The
-            # success path reports it; the failure path has to as well.
-            if failure is not None:
-                remedy = self.blocked_forwarding_remedy(self.default_network())
-                if remedy is not None:
-                    failure.add_note(remedy)
-            if failure is not None and policy is not None and policy.unresolved_defaults:
-                failure.add_note(
-                    "built-in endpoints omitted from the ACL because the host could "
-                    "not resolve them: " + ", ".join(policy.unresolved_defaults)
-                )
-            # A failed supply-chain fetch is only diagnosable from inside the
-            # builder, under the ACL that blocked it, so allow keeping both.
-            if failure is not None and os.environ.get("SANDBOXSH_KEEP_BUILDER") == "1":
-                failure.add_note(
-                    f"kept builder {builder} and its ACL for inspection; "
-                    f"enter it with `incus --project {self.project} exec {builder} -- bash`, "
-                    f"then remove it with `incus --project {self.project} delete {builder} "
-                    "--force` and rerun `sandboxsh image build`"
-                )
-            else:
-                self.command("delete", builder, "--force", check=False)
-                try:
-                    self.delete_acl(build_config)
-                except Exception as cleanup_error:
-                    if failure is None:
-                        raise
-                    failure.add_note(f"ACL cleanup also failed: {cleanup_error}")
-        return policy
+    ) -> AclPolicy | None:
+        """Build and publish the golden image with the incremental stage cache."""
+        from .imagebuild import ImageBuilder
+
+        report = ImageBuilder(self).build(image, source)
+        return report.policy
