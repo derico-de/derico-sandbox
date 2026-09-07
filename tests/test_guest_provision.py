@@ -55,6 +55,16 @@ def test_non_root_provisioning_seeds_valid_pi_settings_without_breaking_shell_qu
     assert json.loads(settings) == {"npmCommand": ["pnpm"]}
 
 
+def test_pi_extensions_may_run_build_scripts_before_the_first_install() -> None:
+    body = non_root_provisioning_body()
+
+    workspace = body.split(
+        'cat > "$HOME/.pi/agent/npm/pnpm-workspace.yaml" <<PI_WORKSPACE\n', 1
+    )[1].split("\nPI_WORKSPACE", 1)[0]
+    assert workspace == "dangerouslyAllowAllBuilds: true"
+    assert body.index("PI_WORKSPACE") < body.index("pi install ")
+
+
 def test_the_login_profile_keeps_pnpm_state_off_the_project_mount() -> None:
     profile = login_profile()
 

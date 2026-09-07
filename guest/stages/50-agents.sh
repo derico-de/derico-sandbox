@@ -56,6 +56,15 @@ mkdir -p "$HOME/.pi/agent"
 cat > "$HOME/.pi/agent/settings.json" <<PI_SETTINGS
 {"npmCommand":["pnpm"]}
 PI_SETTINGS
+# pnpm 12 refuses an install whose dependencies carry unreviewed build scripts,
+# and the extensions below pull in esbuild and protobufjs. npm, which pi would
+# use by default, runs such scripts unasked; keep that for the extension tree
+# only, so a project keeps its own pnpm build policy. agent-init enforces the
+# same key at boot for a shared volume seeded by an older image.
+mkdir -p "$HOME/.pi/agent/npm"
+cat > "$HOME/.pi/agent/npm/pnpm-workspace.yaml" <<PI_WORKSPACE
+dangerouslyAllowAllBuilds: true
+PI_WORKSPACE
 "$HOME/.local/bin/uv" tool install --python 3.12 mistral-vibe
 "$HOME/.local/bin/uv" tool install ruff
 "$HOME/.local/bin/uv" tool install pytest

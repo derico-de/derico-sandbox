@@ -491,7 +491,11 @@ The build installs:
 
 Pi package identifiers still use Pi's `npm:<package>` source syntax, but the
 configured `npmCommand` is `pnpm`, so registry lookups and installation are
-performed by pnpm rather than npm.
+performed by pnpm rather than npm. pnpm 12 refuses to install dependencies with
+unreviewed build scripts, which pi's extensions have, so the extension tree at
+`~/.pi/agent/npm` carries `dangerouslyAllowAllBuilds: true` in its
+`pnpm-workspace.yaml`, enforced at every boot. That matches what npm would do
+and stays confined to that directory; projects keep pnpm's default policy.
 
 Rebuild the alias after changing anything under `guest/`:
 

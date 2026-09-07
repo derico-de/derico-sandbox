@@ -247,6 +247,53 @@ def test_pi_uses_pnpm_without_discarding_existing_settings(tmp_path: Path) -> No
     assert written["theme"] == "dark"
 
 
+def run_configure_pi_build_scripts(tmp_path: Path, workspace: Path) -> None:
+    script = tmp_path / "configure-pi-builds.sh"
+    script.write_text(
+        "set -eu\n"
+        "install() {\n"
+        '  if [ "$1" = "-d" ]; then mkdir -p "${@: -1}"; return; fi\n'
+        '  while [ $# -gt 2 ]; do shift; done; cp "$1" "$2"\n'
+        "}\n"
+        f"{agent_init_function('configure_pi_build_scripts')}"
+        f'configure_pi_build_scripts "{workspace}"\n'
+    )
+    subprocess.run(["bash", str(script)], check=True, capture_output=True, text=True)
+
+
+def test_pi_extensions_may_run_build_scripts_on_a_volume_seeded_by_an_older_image(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / ".pi" / "agent" / "npm" / "pnpm-workspace.yaml"
+    workspace.parent.mkdir(parents=True)
+    # pnpm 12 leaves this behind after refusing an install.
+    workspace.write_text("allowBuilds:\n  esbuild: set this to true or false\n")
+
+    run_configure_pi_build_scripts(tmp_path, workspace)
+
+    assert workspace.read_text() == (
+        "allowBuilds:\n  esbuild: set this to true or false\ndangerouslyAllowAllBuilds: true\n"
+    )
+
+
+def test_a_build_policy_disabled_inside_the_sandbox_is_re_enabled(tmp_path: Path) -> None:
+    workspace = tmp_path / ".pi" / "agent" / "npm" / "pnpm-workspace.yaml"
+    workspace.parent.mkdir(parents=True)
+    workspace.write_text("dangerouslyAllowAllBuilds: false\n")
+
+    run_configure_pi_build_scripts(tmp_path, workspace)
+
+    assert workspace.read_text() == "dangerouslyAllowAllBuilds: true\n"
+
+
+def test_a_missing_extension_tree_gets_the_build_policy(tmp_path: Path) -> None:
+    workspace = tmp_path / ".pi" / "agent" / "npm" / "pnpm-workspace.yaml"
+
+    run_configure_pi_build_scripts(tmp_path, workspace)
+
+    assert workspace.read_text() == "dangerouslyAllowAllBuilds: true\n"
+
+
 @needs_jq
 def test_chrome_devtools_is_registered_as_a_headless_user_scope_mcp_server(
     tmp_path: Path,

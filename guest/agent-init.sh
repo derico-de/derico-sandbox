@@ -82,6 +82,25 @@ configure_pi_package_manager() {
 }
 configure_pi_package_manager "$HOME_DEV/.pi/agent/settings.json"
 
+# pnpm 12 fails an install whose dependencies carry unreviewed build scripts,
+# and pi's extensions do (pi-subagents pulls in esbuild). npm, pi's default,
+# runs such scripts unasked; keep that for pi's extension tree only, so a
+# project's own pnpm build policy is untouched. pnpm rewrites this file itself
+# and keeps the key, but a shared volume seeded by an older image lacks it.
+configure_pi_build_scripts() {
+    local workspace="$1"
+    local tmp
+    install -d -m 0755 -o dev -g dev "$(dirname "$workspace")"
+    tmp="$(mktemp)"
+    if [ -f "$workspace" ]; then
+        grep -v '^dangerouslyAllowAllBuilds:' "$workspace" > "$tmp" || true
+    fi
+    printf 'dangerouslyAllowAllBuilds: true\n' >> "$tmp"
+    install -m 0644 -o dev -g dev "$tmp" "$workspace"
+    rm -f "$tmp"
+}
+configure_pi_build_scripts "$HOME_DEV/.pi/agent/npm/pnpm-workspace.yaml"
+
 # The status line lives next to settings.json: in shared mode both are on the
 # shared volume, so every sandbox sees the same script at the same path.
 statusline="$(dirname "$settings")/statusline.sh"
