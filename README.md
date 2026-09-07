@@ -475,7 +475,8 @@ The build installs:
 - Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli 7.0.0b14 or newer
 - OpenLDAP and SASL development headers for building `python-ldap`
 - Cairo, Pango, and image libraries for WeasyPrint-based PDF exports
-- Claude Code, pi (plus subagents/Impeccable/sideshow), and Mistral Vibe
+- Claude Code, pi (plus subagents/Impeccable/sideshow/Firecrawl/codex-status), and
+  Mistral Vibe
 - Google Chrome and the Chrome DevTools MCP server (see below; amd64 only)
 - Playwright with its Chromium build, plus the Playwright MCP server
   (see below)

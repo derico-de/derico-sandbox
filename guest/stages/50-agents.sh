@@ -66,4 +66,5 @@ pi install npm:pi-subagents
 pi install npm:pi-impeccable
 pi install npm:sideshow
 pi install npm:@narumitw/pi-firecrawl
+pi install npm:pi-codex-status
 '
