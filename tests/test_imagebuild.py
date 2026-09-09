@@ -400,6 +400,29 @@ def test_a_miss_at_the_third_stage_copies_the_second_entry_and_never_inits(
     assert "parent changed" in harness.lines[4]
 
 
+def test_the_build_acl_is_detached_from_every_instance_that_outlives_it(
+    tmp_path: Path, fake_acl
+) -> None:
+    harness = Harness(tmp_path)
+    harness.pin()
+    cached = harness.cache(3)
+
+    harness.builder.build(ALIAS, SOURCE, publish=False)
+
+    ops = harness.runner.operations()
+    worker = harness.runner.matching("copy")[0][2]
+    unset = [op for op in ops if op[:3] == ["config", "device", "unset"]]
+    assert all(op[4:] == ["eth0", "security.acls"] for op in unset)
+    # Incus refuses to delete an ACL a cache entry still names, and entries
+    # outlive the build by design.
+    assert {op[3] for op in unset} == {worker, *(f"{CACHE_PREFIX}{key}" for key in cached)}
+    stop = ops.index(["stop", worker, "--force"])
+    detach = ops.index(["config", "device", "unset", worker, "eth0", "security.acls"])
+    rename = ops.index(["rename", worker, f"{CACHE_PREFIX}{harness.keys()[-1]}"])
+    assert stop < detach < rename
+    assert fake_acl == ["apply", "delete"]
+
+
 def test_a_stage_runs_under_the_acl_with_pins_and_is_committed_by_stamp_then_rename(
     tmp_path: Path, fake_acl
 ) -> None:

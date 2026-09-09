@@ -873,7 +873,7 @@ class ImageBuilder:
                 )
             elif policy is not None:
                 try:
-                    self.incus.delete_acl(build_config)
+                    self._release_acl(build_config, plan)
                 except Exception as cleanup_error:
                     if failure is None:
                         raise
@@ -885,6 +885,14 @@ class ImageBuilder:
             rebuilt=rebuilt,
             elapsed=time.monotonic() - started,
         )
+
+    def _release_acl(self, build_config: ProjectConfig, plan: BuildPlan) -> None:
+        """Delete the build ACL once nothing references it any more."""
+        # Entries stamped by a build that kept the ACL on their NIC still name
+        # it, and one of those is enough to fail every later deletion.
+        for entry in plan.entries.values():
+            self.incus.detach_acl(entry.instance)
+        self.incus.delete_acl(build_config)
 
     def _remove_leftover_workers(self) -> None:
         for worker in self.cache.workers():
@@ -943,6 +951,9 @@ class ImageBuilder:
             # A forced stop is a power cut; flush the guest page cache first.
             self.incus.command("exec", worker, "--", "sync")
             self.incus.command("stop", worker, "--force")
+            # This worker is about to become a cache entry that outlives the
+            # build, and Incus cannot delete an ACL an instance still names.
+            self.incus.detach_acl(worker)
         except Exception as error:
             parent_label = parent.key if parent is not None else "source image"
             failure = SandboxshError(

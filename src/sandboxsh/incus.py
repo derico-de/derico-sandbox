@@ -715,6 +715,19 @@ class Incus:
         for key, value in settings.items():
             self.command("config", "device", "set", target, "eth0", key, value)
 
+    def detach_acl(self, instance: str) -> None:
+        """Drop the ACL reference from an instance's NIC.
+
+        Incus refuses to delete an ACL that any instance still names, so an
+        instance meant to outlive its ACL has to let go of it first. The rest of
+        the override stays: the device is re-pointed at a fresh ACL on reuse.
+        """
+        cleared = self.command(
+            "config", "device", "unset", instance, "eth0", "security.acls", check=False
+        )
+        if cleared.returncode and not self._not_found(cleared):
+            raise self._probe_error(f"detach network ACL from {instance}", cleared)
+
     def delete_acl(self, config: ProjectConfig) -> None:
         acl = self._host_acl_name(config)
         deleted = self._admin_acl_query("DELETE", acl, check=False)

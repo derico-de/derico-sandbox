@@ -295,6 +295,43 @@ def test_unpin_allowlist_removes_only_the_managed_block() -> None:
     ]
 
 
+def test_detach_acl_clears_only_the_acl_reference_on_the_nic() -> None:
+    runner = FakeRunner()
+    incus = Incus(runner)
+
+    incus.detach_acl("sandboxsh-cache-abc")
+
+    assert runner.commands[0][0][4:] == [
+        "config",
+        "device",
+        "unset",
+        "sandboxsh-cache-abc",
+        "eth0",
+        "security.acls",
+    ]
+
+
+def test_detach_acl_is_idempotent_when_the_instance_is_gone() -> None:
+    runner = FakeRunner([Result("", "Error: Instance not found", 1)])
+    incus = Incus(runner)
+
+    incus.detach_acl("sandboxsh-cache-abc")
+
+    assert runner.commands[0][1]["check"] is False
+
+
+def test_detach_acl_preserves_unexpected_errors() -> None:
+    runner = FakeRunner([Result("", "permission denied", 1)])
+    incus = Incus(runner)
+
+    try:
+        incus.detach_acl("sandboxsh-cache-abc")
+    except SandboxshError as exc:
+        assert "permission denied" in str(exc)
+    else:
+        raise AssertionError("unexpected ACL detach error was suppressed")
+
+
 def test_delete_acl_uses_admin_default_network_project(tmp_path: Path) -> None:
     runner = FakeRunner()
     incus = Incus(runner)

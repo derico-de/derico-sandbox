@@ -72,11 +72,14 @@ in `guest/stages/` as an ordered chain and caches every finished stage:
    thin) or by `incus init` from the pinned source for the first stage;
    attaches the default-deny build ACL before first boot; waits for
    `incus-agent` and cloud-init; pins the allowlist; pushes and runs the stage
-   script with streamed output; unpins; stops; stamps `user.sandboxsh.cache.*`
-   and renames the worker into its cache name (the atomic visibility point);
+   script with streamed output; unpins; stops; clears `security.acls` from the
+   worker NIC; stamps `user.sandboxsh.cache.*` and renames the worker into its
+   cache name (the atomic visibility point);
 5. publishes the last entry as the alias with `user.sandboxsh.build_key`,
    `user.sandboxsh.source`, `user.sandboxsh.stages`, and `user.sandboxsh.disk`
-   properties, then deletes the build ACL. The entry stays for the next build.
+   properties, then deletes the build ACL. The entry stays for the next build,
+   which is why it must not still name the ACL: Incus refuses to delete an ACL
+   any instance references, so the deletion sweeps the surviving entries first.
 
 The finalize stage also drops `OOMPolicy=continue` and `OOMScoreAdjust=-1000`
 onto `incus-agent.service`: every `incus exec` process is a child in the
