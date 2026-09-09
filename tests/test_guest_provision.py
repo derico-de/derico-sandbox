@@ -94,3 +94,12 @@ def test_finalize_fetches_nothing_from_the_network() -> None:
     assert "pnpm_global" not in text
     assert "pi install" not in text
     assert "uv tool install" not in text
+
+
+def test_an_oom_killed_guest_process_does_not_take_the_agent_sessions_down() -> None:
+    text = FINALIZE.read_text()
+
+    dropin = text.split(
+        "cat > /etc/systemd/system/incus-agent.service.d/sandboxsh-oom.conf <<'DROPIN'\n", 1
+    )[1].split("\nDROPIN\n", 1)[0]
+    assert dropin.splitlines() == ["[Service]", "OOMPolicy=continue", "OOMScoreAdjust=-1000"]

@@ -17,6 +17,19 @@ HOOK
 chmod 0755 /etc/git-hooks/pre-push
 git config --system core.hooksPath /etc/git-hooks
 
+# Every `sandboxsh shell`/`exec` process is a child of incus-agent and lives in
+# its cgroup. systemd's default OOMPolicy=stop turns one OOM-killed build
+# process (a 3 GB webpack, say) into a stop of the whole agent, which drops
+# every host session with `websocket: close 1006`. Let the kernel kill only the
+# offender and keep the agent itself off the OOM killer's list.
+install -d -m 0755 /etc/systemd/system/incus-agent.service.d
+cat > /etc/systemd/system/incus-agent.service.d/sandboxsh-oom.conf <<'DROPIN'
+[Service]
+OOMPolicy=continue
+OOMScoreAdjust=-1000
+DROPIN
+chmod 0644 /etc/systemd/system/incus-agent.service.d/sandboxsh-oom.conf
+
 cat > /etc/profile.d/sandboxsh.sh <<'PROFILE'
 export SANDBOXSH=1
 export DEVCONTAINER=true

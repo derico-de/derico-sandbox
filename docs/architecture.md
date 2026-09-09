@@ -78,6 +78,12 @@ in `guest/stages/` as an ordered chain and caches every finished stage:
    `user.sandboxsh.source`, `user.sandboxsh.stages`, and `user.sandboxsh.disk`
    properties, then deletes the build ACL. The entry stays for the next build.
 
+The finalize stage also drops `OOMPolicy=continue` and `OOMScoreAdjust=-1000`
+onto `incus-agent.service`: every `incus exec` process is a child in the
+agent's cgroup, and systemd's default `OOMPolicy=stop` would otherwise stop
+the agent, and with it every host session, whenever the kernel OOM-kills one
+guest build process.
+
 The first stage disables cloud-init after its own first boot and the finalize
 stage re-enables and cleans it, so copied workers do not re-run cloud-init as
 new machines while every project VM still gets a fresh first boot. The stage
