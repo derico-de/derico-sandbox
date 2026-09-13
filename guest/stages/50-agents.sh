@@ -14,8 +14,9 @@ pnpm_global() {
 }
 
 # sideshow publishes HTML, diffs, and diagrams to a live surface the user watches
-# in a browser. pi drives it through the extension installed below; every other
-# agent needs the CLI, so install it globally and put `sideshow` on PATH. Which
+# in a browser. pi drives it through the extension installed below (its skill is
+# filtered out, see agent-init); every other agent needs the CLI, so install it
+# globally and put `sideshow` on PATH. Which
 # surface it talks to is per-user, not per-image: the CLI reads SIDESHOW_URL
 # (and SIDESHOW_TOKEN for a deployed instance) at call time, and reaching a
 # surface outside the VM needs that host in `firewall.allow`.

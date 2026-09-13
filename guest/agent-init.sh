@@ -82,6 +82,26 @@ configure_pi_package_manager() {
 }
 configure_pi_package_manager "$HOME_DEV/.pi/agent/settings.json"
 
+# The sideshow package bundles a skill named `sideshow`, the same name as the
+# skill the host mounts into ~/.agents/skills. pi loads one and reports the other
+# as skipped, so load only the extension from the package: `pi install` records
+# the plain source string, and the object form with an empty skills list keeps
+# the extension while dropping the bundled skills. Applied at boot so a shared
+# volume seeded by an older image, or a later `pi install`, converges too.
+configure_pi_package_filters() {
+    local pi_settings="$1"
+    local pi_tmp
+    [ -f "$pi_settings" ] || return 0
+    jq empty "$pi_settings" >/dev/null 2>&1 || return 0
+    pi_tmp="$(mktemp)"
+    jq 'if .packages then .packages |= map(
+            if . == "npm:sideshow" then {source: ., skills: []} else . end)
+        else . end' "$pi_settings" > "$pi_tmp"
+    install -m 0600 -o dev -g dev "$pi_tmp" "$pi_settings"
+    rm -f "$pi_tmp"
+}
+configure_pi_package_filters "$HOME_DEV/.pi/agent/settings.json"
+
 # pnpm 12 fails an install whose dependencies carry unreviewed build scripts,
 # and pi's extensions do (pi-subagents pulls in esbuild). npm, pi's default,
 # runs such scripts unasked; keep that for pi's extension tree only, so a

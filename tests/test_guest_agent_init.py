@@ -247,6 +247,55 @@ def test_pi_uses_pnpm_without_discarding_existing_settings(tmp_path: Path) -> No
     assert written["theme"] == "dark"
 
 
+def run_configure_pi_package_filters(tmp_path: Path, settings: Path) -> None:
+    script = tmp_path / "configure-pi-filters.sh"
+    script.write_text(
+        "set -eu\n"
+        'install() { while [ $# -gt 2 ]; do shift; done; cp "$1" "$2"; }\n'
+        f"{agent_init_function('configure_pi_package_filters')}"
+        f'configure_pi_package_filters "{settings}"\n'
+    )
+    subprocess.run(["bash", str(script)], check=True, capture_output=True, text=True)
+
+
+@needs_jq
+def test_the_sideshow_package_loads_without_its_bundled_skill(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"theme": "dark", "packages": ["npm:pi-subagents", "npm:sideshow"]})
+    )
+
+    run_configure_pi_package_filters(tmp_path, settings)
+
+    written = json.loads(settings.read_text())
+    assert written["packages"] == [
+        "npm:pi-subagents",
+        {"source": "npm:sideshow", "skills": []},
+    ]
+    assert written["theme"] == "dark"
+
+
+@needs_jq
+def test_an_already_filtered_sideshow_package_is_left_alone(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    packages = [{"source": "npm:sideshow", "skills": [], "extensions": ["extensions/*"]}]
+    settings.write_text(json.dumps({"packages": packages}))
+
+    run_configure_pi_package_filters(tmp_path, settings)
+
+    assert json.loads(settings.read_text())["packages"] == packages
+
+
+@needs_jq
+def test_settings_without_packages_survive_the_filter_pass(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"npmCommand": ["pnpm"]}))
+
+    run_configure_pi_package_filters(tmp_path, settings)
+
+    assert json.loads(settings.read_text()) == {"npmCommand": ["pnpm"]}
+
+
 def run_configure_pi_build_scripts(tmp_path: Path, workspace: Path) -> None:
     script = tmp_path / "configure-pi-builds.sh"
     script.write_text(

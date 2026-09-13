@@ -606,9 +606,11 @@ pi has no MCP support by design.
 
 [sideshow](https://github.com/modem-dev/sideshow) is a live surface a user
 watches in a browser while an agent publishes HTML, markdown, diffs, diagrams,
-and highlighted code to it. pi reaches it through the extension in the image;
-Claude Code and Mistral Vibe have no such extension, so the image installs the
-`sideshow` CLI globally and every agent in the VM can use it:
+and highlighted code to it. pi reaches it through the extension in the image
+(the package's bundled `sideshow` skill is filtered out at boot, so a host skill
+of the same name loads without a collision); Claude Code and Mistral Vibe have
+no such extension, so the image installs the `sideshow` CLI globally and every
+agent in the VM can use it:
 
 ```bash
 SIDESHOW_URL=http://your-host:8228 sideshow agent-howto
