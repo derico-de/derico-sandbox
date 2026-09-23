@@ -7,7 +7,9 @@
   "ports": [],
   "firewall": {
     "enabled": true,
-    "allow": []
+    "allow": [
+      "pi.dev"
+    ]
   },
   "resources": {
     "cpus": 4,
