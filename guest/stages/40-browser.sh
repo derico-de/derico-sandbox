@@ -50,7 +50,14 @@ if [ "$ARCH" = "amd64" ]; then
     apt-get install -y --no-install-recommends google-chrome-stable
     rm -rf /var/lib/apt/lists/*
     pnpm_global chrome-devtools-mcp
+    # Projects written for Debian's chromium package hard-code its binary
+    # (Playwright configs, MCP entries with --executablePath, devcontainers).
+    # Answer both of its names with Chrome instead of failing with a missing
+    # browser.
+    ln -sfn /usr/bin/google-chrome /usr/bin/chromium
+    ln -sfn /usr/bin/google-chrome /usr/bin/chromium-browser
     google-chrome --version
+    chromium --version
 else
     printf 'sandboxsh: skipping Google Chrome on %s (amd64 only)\n' "$ARCH" >&2
 fi

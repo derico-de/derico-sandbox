@@ -582,6 +582,12 @@ one user-data directory), with Google's usage statistics and update checks
 turned off. Change the entry inside a sandbox and it is left alone on every
 later boot — an existing `chrome-devtools` server is never overwritten.
 
+Chrome also answers to `/usr/bin/chromium` and `/usr/bin/chromium-browser`,
+the binaries of Debian's chromium package, so a project that hard-codes one of
+them (a Playwright `executablePath`, a `.mcp.json` written for a devcontainer)
+gets a browser instead of "Browser was not found at the configured
+executablePath".
+
 Playwright is the second browser, registered the same way as the MCP server
 `playwright` with `--headless --isolated`. It drives Playwright's own Chromium
 through accessibility snapshots instead of the DevTools protocol, which suits

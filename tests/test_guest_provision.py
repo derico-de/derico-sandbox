@@ -103,3 +103,12 @@ def test_an_oom_killed_guest_process_does_not_take_the_agent_sessions_down() -> 
         "cat > /etc/systemd/system/incus-agent.service.d/sandboxsh-oom.conf <<'DROPIN'\n", 1
     )[1].split("\nDROPIN\n", 1)[0]
     assert dropin.splitlines() == ["[Service]", "OOMPolicy=continue", "OOMScoreAdjust=-1000"]
+
+
+def test_chrome_answers_to_the_debian_chromium_names() -> None:
+    text = (STAGES / "40-browser.sh").read_text()
+
+    chrome_install = text.index("apt-get install -y --no-install-recommends google-chrome-stable")
+    for name in ("chromium", "chromium-browser"):
+        link = f"ln -sfn /usr/bin/google-chrome /usr/bin/{name}"
+        assert text.index(link) > chrome_install
