@@ -488,6 +488,10 @@ The build installs:
   usage, and five-hour/weekly plan-limit percentages), installed next to
   settings.json at boot; plan limits appear for Claude.ai subscribers after the
   first API response, and a statusLine you configure yourself is left alone
+- a Pi context status showing full estimated used/total token counts, such as
+  `ctx 12,345/272,000 tokens`, alongside the default footer; `?` means usage is
+  unknown after compaction until the next response. Installed at boot in both
+  shared and project-local agent state.
 
 Pi package identifiers still use Pi's `npm:<package>` source syntax, but the
 configured `npmCommand` is `pnpm`, so registry lookups and installation are

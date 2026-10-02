@@ -121,6 +121,39 @@ configure_pi_build_scripts() {
 }
 configure_pi_build_scripts "$HOME_DEV/.pi/agent/npm/pnpm-workspace.yaml"
 
+# Keep Pi's default footer and other extensions' statuses. Install at boot so
+# both shared agent state and project-local state receive the token display.
+configure_pi_context_status() {
+    local extensions="$1"
+    local tmp
+    install -d -m 0755 -o dev -g dev "$extensions"
+    tmp="$(mktemp)"
+    cat > "$tmp" <<'PI_CONTEXT'
+export default function (pi) {
+    const update = (_event, ctx) => {
+        if (!ctx.hasUI) return;
+        const usage = ctx.getContextUsage();
+        const tokens = usage?.tokens == null ? "?" : usage.tokens.toLocaleString("en-US");
+        ctx.ui.setStatus(
+            "sandboxsh-context",
+            usage ? `ctx ${tokens}/${usage.contextWindow.toLocaleString("en-US")} tokens` : undefined,
+        );
+    };
+    pi.on("session_start", update);
+    pi.on("session_switch", update);
+    pi.on("session_fork", update);
+    pi.on("session_tree", update);
+    pi.on("session_compact", update);
+    pi.on("model_select", update);
+    pi.on("message_end", update);
+    pi.on("agent_end", update);
+}
+PI_CONTEXT
+    install -m 0644 -o dev -g dev "$tmp" "$extensions/sandboxsh-context.js"
+    rm -f "$tmp"
+}
+configure_pi_context_status "$HOME_DEV/.pi/agent/extensions"
+
 # The status line lives next to settings.json: in shared mode both are on the
 # shared volume, so every sandbox sees the same script at the same path.
 statusline="$(dirname "$settings")/statusline.sh"
