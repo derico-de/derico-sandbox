@@ -154,6 +154,19 @@ PI_CONTEXT
 }
 configure_pi_context_status "$HOME_DEV/.pi/agent/extensions"
 
+# Refresh the model-gated prompt at boot, including already-seeded shared state.
+# Keep the legacy hook's filename so upgrading replaces it rather than loading two.
+configure_pi_gpt_system() {
+    local extensions="$1"
+    local source_dir="$2"
+    install -d -m 0755 -o dev -g dev "$extensions"
+    install -m 0644 -o dev -g dev "$source_dir/gpt-system-prompt.md" \
+        "$extensions/gpt-system-prompt.md"
+    install -m 0644 -o dev -g dev "$source_dir/gpt-system-indicator.js" \
+        "$extensions/gpt-system-indicator.ts"
+}
+configure_pi_gpt_system "$HOME_DEV/.pi/agent/extensions" /opt/sandboxsh/pi
+
 # The status line lives next to settings.json: in shared mode both are on the
 # shared volume, so every sandbox sees the same script at the same path.
 statusline="$(dirname "$settings")/statusline.sh"

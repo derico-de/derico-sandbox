@@ -76,6 +76,8 @@ chown -R dev:dev /opt/sandboxsh/agent-seed /home/dev
 
 install -m 0755 /root/agent-init.sh /usr/local/sbin/sandboxsh-agent-init
 install -m 0755 /root/instance-init.sh /usr/local/sbin/sandboxsh-instance-init
+install -d -m 0755 /opt/sandboxsh/pi
+install -m 0644 /root/gpt-system-indicator.js /root/gpt-system-prompt.md /opt/sandboxsh/pi/
 
 # Remove transient builder state. These remove package and shell residue from
 # the golden image; cloud-init performs its own clean below.

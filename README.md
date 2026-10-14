@@ -492,6 +492,9 @@ The build installs:
   `ctx 12,345/272,000 tokens`, alongside the default footer; `?` means usage is
   unknown after compaction until the next response. Installed at boot in both
   shared and project-local agent state.
+- a Codex-derived GPT system profile for Pi, automatically appended for GPT
+  models in both shared and project-local state. Other model families are
+  unchanged; see [host installation and prompt sources](docs/gpt-system-prompt.md).
 
 Pi package identifiers still use Pi's `npm:<package>` source syntax, but the
 configured `npmCommand` is `pnpm`, so registry lookups and installation are

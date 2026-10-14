@@ -45,7 +45,12 @@ STAGES_PROPERTY = "user.sandboxsh.stages"
 DISK_PROPERTY = "user.sandboxsh.disk"
 
 # Guest helpers installed by the finalize stage; their content is part of its key.
-HELPER_FILES = ("agent-init.sh", "instance-init.sh")
+HELPER_FILES = (
+    "agent-init.sh",
+    "instance-init.sh",
+    "gpt-system-indicator.js",
+    "gpt-system-prompt.md",
+)
 FINALIZE_STAGE = "90-finalize"
 BUILD_RESOURCES = Resources(cpus=4, memory="8GiB", disk="30GiB")
 

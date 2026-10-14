@@ -56,6 +56,8 @@ def write_guest(root: Path, bodies: dict[str, str] | None = None) -> Path:
         (stages / name).write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n{body}")
     (guest / "agent-init.sh").write_text("#!/usr/bin/env bash\necho agent\n")
     (guest / "instance-init.sh").write_text("#!/usr/bin/env bash\necho instance\n")
+    (guest / "gpt-system-indicator.js").write_text("export default function () {}\n")
+    (guest / "gpt-system-prompt.md").write_text("# GPT profile\n")
     return guest
 
 
@@ -164,7 +166,12 @@ def test_stages_load_in_numeric_order_with_declared_inputs(tmp_path: Path) -> No
     assert user.inputs(inputs_for(guest, uid=7, gid=8)) == ("uid=7", "gid=8")
     finalize = stages[-1]
     assert not finalize.floating
-    assert finalize.files == ("agent-init.sh", "instance-init.sh")
+    assert finalize.files == (
+        "agent-init.sh",
+        "instance-init.sh",
+        "gpt-system-indicator.js",
+        "gpt-system-prompt.md",
+    )
 
 
 def test_a_stage_file_without_the_numeric_prefix_is_rejected(tmp_path: Path) -> None:
@@ -449,6 +456,8 @@ def test_a_stage_runs_under_the_acl_with_pins_and_is_committed_by_stamp_then_ren
         f"{worker}/root/90-finalize.sh",
         f"{worker}/root/agent-init.sh",
         f"{worker}/root/instance-init.sh",
+        f"{worker}/root/gpt-system-indicator.js",
+        f"{worker}/root/gpt-system-prompt.md",
     ]
     assert exec_ops[-1][2:] == ["--", "sync"]
     stop = ops.index(["stop", worker, "--force"])
@@ -878,6 +887,19 @@ def test_status_reports_the_published_key_and_the_first_stage_to_rebuild(tmp_pat
 
 
 # -- manifest and helpers ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("filename", ["gpt-system-indicator.js", "gpt-system-prompt.md"])
+def test_editing_gpt_profile_invalidates_only_finalize(tmp_path: Path, filename: str) -> None:
+    harness = Harness(tmp_path)
+    before = harness.keys()
+
+    resource = harness.guest / filename
+    resource.write_text(resource.read_text() + "\nchanged\n")
+    after = harness.keys()
+
+    assert after[:-1] == before[:-1]
+    assert after[-1] != before[-1]
 
 
 def test_manifest_round_trips_and_tolerates_garbage(tmp_path: Path) -> None:
