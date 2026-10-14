@@ -86,6 +86,29 @@ def test_stages_that_use_apt_leave_no_package_lists_behind() -> None:
             assert "apt-get clean" in text, script.name
 
 
+def test_powerman_loopback_entry_survives_cloud_init_and_repeated_provisioning(
+    tmp_path: Path,
+) -> None:
+    hosts = tmp_path / "hosts"
+    template = tmp_path / "hosts.debian.tmpl"
+    hosts.write_text("127.0.0.1 localhost\n")
+    template.write_text("127.0.1.1 {{fqdn}} {{hostname}}\n127.0.0.1 localhost\n")
+    block = FINALIZE.read_text().split("for hosts_file in ", 1)[1].split("\ndone\n", 1)[0]
+    script = "set -euo pipefail\nfor hosts_file in " + block + "\ndone\n"
+    script = script.replace("/etc/hosts", str(hosts)).replace(
+        "/etc/cloud/templates/hosts.debian.tmpl", str(template)
+    )
+
+    for _ in range(2):
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+
+    assert hosts.read_text().splitlines().count("127.0.0.1 powerman") == 1
+    assert template.read_text().splitlines().count("127.0.0.1 powerman") == 1
+    assert "127.0.0.1 localhost" in hosts.read_text()
+    assert "127.0.1.1 {{fqdn}} {{hostname}}" in template.read_text()
+
+
 def test_finalize_fetches_nothing_from_the_network() -> None:
     text = FINALIZE.read_text()
 

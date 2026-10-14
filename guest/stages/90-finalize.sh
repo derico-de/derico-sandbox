@@ -3,6 +3,11 @@
 # helpers, cleanup, and smoke checks. Fetches nothing from the network.
 set -euo pipefail
 
+# Cloud-init regenerates /etc/hosts on each new instance's first boot.
+for hosts_file in /etc/hosts /etc/cloud/templates/hosts.debian.tmpl; do
+    grep -qxF '127.0.0.1 powerman' "$hosts_file" || printf '\n127.0.0.1 powerman\n' >> "$hosts_file"
+done
+
 # Keep git publication behind a deliberate host/human step. Guest root can
 # bypass this (Docker membership makes guest root part of the threat model), but
 # it prevents routine autonomous pushes and accidental publication.
