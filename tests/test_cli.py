@@ -136,6 +136,114 @@ def test_update_reinstalls_requested_github_revision(
     assert "Updated sandboxsh from" in result.output
 
 
+@pytest.mark.parametrize("arguments", (["shell"], ["exec", "--", "true"]))
+@pytest.mark.parametrize("ready", (True, False))
+def test_shell_and_exec_wait_for_agent_before_entering(
+    tmp_path: Path, monkeypatch, arguments: list[str], ready: bool
+) -> None:
+    from sandboxsh.errors import SandboxshError
+
+    path = tmp_path / ".sandboxsh.json"
+    path.write_text(json.dumps({"name": "demo", "dirs": ["."]}))
+    calls = []
+
+    class EntryRunner:
+        def exec(self, command, **kwargs):
+            calls.append("exec")
+
+    def wait(self, instance):
+        calls.append("wait")
+        if not ready:
+            raise SandboxshError("timed out waiting for the Incus agent")
+
+    monkeypatch.setattr("sandboxsh.cli.Runner", EntryRunner)
+    monkeypatch.setattr(Incus, "verify_host_access", lambda self: self.project)
+    monkeypatch.setattr(Incus, "instance_status", lambda self, instance: "Running")
+    monkeypatch.setattr(Incus, "wait_for_agent", wait)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), *arguments])
+
+    assert result.exit_code == (0 if ready else 1), result.output
+    assert calls == (["wait", "exec"] if ready else ["wait"])
+    if not ready:
+        assert "timed out waiting for the Incus agent" in result.output
+
+
+@pytest.mark.parametrize("arguments", (["up", "--no-shell"], ["shell"], ["exec", "--", "true"]))
+def test_unresponsive_daemon_fails_during_bounded_preflight(
+    tmp_path: Path, monkeypatch, arguments: list[str]
+) -> None:
+    from sandboxsh.errors import CommandTimeoutError
+
+    path = tmp_path / ".sandboxsh.json"
+    path.write_text(json.dumps({"name": "demo", "dirs": ["."]}))
+    calls = []
+
+    class UnresponsiveRunner:
+        def run(self, command, **kwargs):
+            calls.append((list(command), kwargs))
+            assert kwargs["timeout"] == 30
+            raise CommandTimeoutError(list(command), kwargs["timeout"])
+
+    monkeypatch.setattr("sandboxsh.cli.Runner", UnresponsiveRunner)
+    monkeypatch.setattr("sandboxsh.incus.grp.getgrnam", lambda name: None)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), *arguments])
+
+    assert result.exit_code == 1, result.output
+    assert "command timed out after 30s: incus" in result.output
+    assert len(calls) == 1
+    assert calls[0][0][4:] == ["project", "list", "--format=json"]
+
+
+def test_up_waits_for_recovering_agent_before_pinning_allowlist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from sandboxsh.security import AclPolicy
+
+    path = tmp_path / ".sandboxsh.json"
+    path.write_text(json.dumps({"name": "demo", "dirs": ["."]}))
+    project = load_config(path)
+    commands = []
+    probes = 0
+
+    class ResumeRunner:
+        def run(self, command, **kwargs):
+            nonlocal probes
+            operation = list(command)[4:]
+            commands.append(operation)
+            if operation[0] == "list":
+                return Result(
+                    json.dumps([{"name": project.instance_name, "status": "Running"}]), "", 0
+                )
+            if operation == ["exec", project.instance_name, "--", "true"]:
+                probes += 1
+                if probes == 1:
+                    return Result("", "Error: VM agent isn't currently running", 1)
+                return Result("", "", 0)
+            assert probes == 2, "allowlist written before the agent recovered"
+            return Result("", "", 0)
+
+    monkeypatch.setattr("sandboxsh.cli.Runner", ResumeRunner)
+    monkeypatch.setattr("sandboxsh.cli._verify_and_approve", lambda *args: None)
+    monkeypatch.setattr("sandboxsh.cli._prime_sudo", lambda *args: None)
+    monkeypatch.setattr("sandboxsh.cli._publish_and_report", lambda *args: None)
+    monkeypatch.setattr(Incus, "exists", lambda *args: True)
+    monkeypatch.setattr(Incus, "assert_immutable_config", lambda *args: None)
+    monkeypatch.setattr(Incus, "sync_mounts", lambda *args: ((), ()))
+    monkeypatch.setattr(Incus, "apply_acl", lambda *args: AclPolicy({}, {}, ()))
+    monkeypatch.setattr(Incus, "attach_acl", lambda *args: None)
+    monkeypatch.setattr("sandboxsh.incus.time.sleep", lambda seconds: None)
+
+    result = CliRunner().invoke(cli, ["--config", str(path), "up", "--no-shell"])
+
+    assert result.exit_code == 0, result.output
+    assert "Waiting for the Incus agent" in result.output
+    assert len(commands) == 4
+    assert "bash" in commands[-1]
+    assert not any(command[0] in ("start", "stop", "delete") for command in commands)
+
+
 def test_guest_shell_keeps_pnpm_store_off_host_mount(tmp_path: Path) -> None:
     path = tmp_path / ".sandboxsh.json"
     path.write_text(json.dumps({"name": "demo", "dirs": ["."]}))

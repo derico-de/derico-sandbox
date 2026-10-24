@@ -48,9 +48,22 @@ set -euo pipefail
 cd "$HOME"
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
-curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
+curl -LsSf https://astral.sh/uv/0.13.4/install.sh -o /tmp/uv-install.sh
 sh /tmp/uv-install.sh
 rm -f /tmp/uv-install.sh
+# Keep standalone pip off the externally managed Debian Python installation.
+uv tool install "pip==26.2.2" --with "certifi==2026.10.19"
+uv tool install "sigstore==4.5.1" --with "certifi==2026.10.19"
+curl -fsSL https://raw.githubusercontent.com/prefix-dev/pixi/v0.82.1/install/install.sh \
+    -o /tmp/pixi-install.sh
+PIXI_VERSION=0.82.1 PIXI_BIN_DIR="$HOME/.local/bin" PIXI_NO_PATH_UPDATE=1 \
+    sh /tmp/pixi-install.sh
+rm -f /tmp/pixi-install.sh
+uv --version
+pip --version
+pip3 --version
+sigstore --version
+pixi --version
 curl -fsSL https://claude.ai/install.sh | bash
 curl -fsSL https://pi.dev/install.sh | sh
 mkdir -p "$HOME/.pi/agent"

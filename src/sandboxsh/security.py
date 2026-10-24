@@ -18,6 +18,9 @@ from .errors import ConfigError, SandboxshError
 DEFAULT_ENDPOINTS: tuple[FirewallEntry, ...] = (
     FirewallEntry("api.anthropic.com", (443,)),
     FirewallEntry("statsig.anthropic.com", (443,)),
+    FirewallEntry("claude.ai", (443,)),
+    FirewallEntry("downloads.claude.ai", (443,)),
+    FirewallEntry("pi.dev", (443,)),
     FirewallEntry("api.openai.com", (443,)),
     FirewallEntry("auth.openai.com", (443,)),
     FirewallEntry("chatgpt.com", (443,)),

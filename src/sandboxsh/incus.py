@@ -12,13 +12,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
+import click
+
 from .config import Mount, ProjectConfig, parse_size
-from .errors import SandboxshError
+from .errors import CommandTimeoutError, SandboxshError
 from .process import Result, Runner
 from .security import AclPolicy, build_acl_policy
 
 DEFAULT_POOL = os.environ.get("SANDBOXSH_STORAGE_POOL", "default")
 CREDS_VOLUME = "sandboxsh-agent-creds"
+CONTROL_TIMEOUT = 30
+GUEST_PROBE_TIMEOUT = 10
 
 # Guest mount point for the host's user-level agent skills. The guest-side
 # init links these into each agent's active configuration.
@@ -145,6 +149,7 @@ class Incus:
         input_text: str | None = None,
         check: bool = True,
         capture: bool = True,
+        timeout: float | None = None,
     ) -> Result:
         # Never inherit a configured TLS/default remote or project. Force the
         # package-provided local user socket and the per-UID restricted project.
@@ -154,6 +159,7 @@ class Incus:
             check=check,
             capture=capture,
             env=self.environment,
+            timeout=timeout,
         )
 
     def _host_acl_name(self, config: ProjectConfig) -> str:
@@ -171,6 +177,7 @@ class Incus:
         return self.runner.run(
             ["sudo", "incus", "--force-local", *args],
             check=check,
+            timeout=CONTROL_TIMEOUT,
         )
 
     def _admin_acl_query(
@@ -187,10 +194,10 @@ class Incus:
         if data is not None:
             command.extend(("-d", json.dumps(data)))
         command.append(endpoint)
-        return self.runner.run(command, check=check)
+        return self.runner.run(command, check=check, timeout=CONTROL_TIMEOUT)
 
     def server_version(self) -> tuple[int, int, int] | None:
-        result = self.command("query", "/1.0", check=False)
+        result = self.command("query", "/1.0", check=False, timeout=CONTROL_TIMEOUT)
         if result.returncode:
             return None
         try:
@@ -235,7 +242,7 @@ class Incus:
             )
 
         expected = self.project
-        result = self.command("project", "list", "--format=json")
+        result = self.command("project", "list", "--format=json", timeout=CONTROL_TIMEOUT)
         try:
             projects = json.loads(result.stdout)
         except json.JSONDecodeError as exc:
@@ -248,11 +255,13 @@ class Incus:
                 "Ensure the user is in `incus` (not `incus-admin`), incus-user.socket is enabled, "
                 "and the package-provided local user socket is active."
             )
-        restricted = self.command("project", "get", expected, "restricted").stdout.strip()
+        restricted = self.command(
+            "project", "get", expected, "restricted", timeout=CONTROL_TIMEOUT
+        ).stdout.strip()
         if restricted != "true":
             raise SandboxshError(f"Incus project {expected!r} is not restricted")
         network_feature = self.command(
-            "project", "get", expected, "features.networks"
+            "project", "get", expected, "features.networks", timeout=CONTROL_TIMEOUT
         ).stdout.strip()
         if network_feature not in ("", "false"):
             raise SandboxshError(
@@ -280,7 +289,9 @@ class Incus:
         return SandboxshError(f"cannot query {label}: {detail}")
 
     def _instance_record(self, instance: str) -> dict | None:
-        result = self.command("list", instance, "--format=json", check=False)
+        result = self.command(
+            "list", instance, "--format=json", check=False, timeout=CONTROL_TIMEOUT
+        )
         if result.returncode:
             raise self._probe_error(f"instance {instance}", result)
         try:
@@ -519,23 +530,45 @@ class Incus:
         record = self._instance_record(instance)
         return record.get("status") if record else None
 
-    def wait_for_agent(self, instance: str, timeout: int = 300) -> None:
+    def _wait_for_guest_command(
+        self, instance: str, *command: str, timeout: int, description: str
+    ) -> None:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = self.command("exec", instance, "--", "true", check=False)
-            if result.returncode == 0:
-                return
-            time.sleep(2)
-        raise SandboxshError(f"timed out waiting for the Incus agent in {instance}")
+        waiting = False
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                result = self.command(
+                    "exec",
+                    instance,
+                    "--",
+                    *command,
+                    check=False,
+                    timeout=min(GUEST_PROBE_TIMEOUT, remaining),
+                )
+                if result.returncode == 0:
+                    return
+            except CommandTimeoutError:
+                pass
+            if not waiting:
+                click.echo(f"Waiting for {description}...", err=True)
+                waiting = True
+            time.sleep(min(2, max(0, deadline - time.monotonic())))
+        raise SandboxshError(f"timed out waiting for {description}")
+
+    def wait_for_agent(self, instance: str, timeout: int = 300) -> None:
+        self._wait_for_guest_command(
+            instance, "true", timeout=timeout, description=f"the Incus agent in {instance}"
+        )
 
     def wait_for_mount(self, instance: str, path: str, timeout: int = 120) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = self.command("exec", instance, "--", "mountpoint", "-q", path, check=False)
-            if result.returncode == 0:
-                return
-            time.sleep(2)
-        raise SandboxshError(f"timed out waiting for {path} to mount in {instance}")
+        self._wait_for_guest_command(
+            instance,
+            "mountpoint",
+            "-q",
+            path,
+            timeout=timeout,
+            description=f"{path} to mount in {instance}",
+        )
 
     def default_network(self) -> str:
         result = self.command("profile", "device", "get", "default", "eth0", "network", check=False)
@@ -675,7 +708,17 @@ class Incus:
             f"set -e; sed -i '/{PIN_BEGIN}/,/{PIN_END}/d' /etc/hosts; "
             "printf '%s' \"$1\" >> /etc/hosts"
         )
-        self.command("exec", instance, "--", "bash", "-c", script, "sandboxsh", document)
+        self.command(
+            "exec",
+            instance,
+            "--",
+            "bash",
+            "-c",
+            script,
+            "sandboxsh",
+            document,
+            timeout=CONTROL_TIMEOUT,
+        )
 
     def unpin_allowlist(self, instance: str) -> None:
         self.command(
@@ -931,7 +974,7 @@ class Incus:
             raise SandboxshError(f"instance disappeared before start: {config.instance_name}")
         if status.lower() != "running":
             self.command("start", config.instance_name)
-            self.wait_for_agent(config.instance_name)
+        self.wait_for_agent(config.instance_name)
 
     def stop(self, config: ProjectConfig) -> None:
         status = self.instance_status(config.instance_name)

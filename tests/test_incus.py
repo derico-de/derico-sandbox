@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from sandboxsh import security
 from sandboxsh.config import load_config
 from sandboxsh.errors import SandboxshError
@@ -109,6 +111,7 @@ def test_verify_host_access_accepts_a_patched_daemon() -> None:
     runner = FakeRunner(_host_access_responses("6.0.6"))
 
     assert Incus(runner).verify_host_access() == f"user-{os.getuid()}"
+    assert all(kwargs["timeout"] == 30 for _, kwargs in runner.commands)
 
 
 def test_verify_host_access_tolerates_an_unreadable_daemon_version() -> None:
@@ -396,6 +399,85 @@ def test_guest_ip_uses_eth0_not_docker0(tmp_path: Path) -> None:
     runner = FakeRunner([Result(json.dumps(payload), "", 0)])
 
     assert Incus(runner).guest_ip(config(tmp_path)) == "10.25.0.42"
+
+
+@pytest.mark.parametrize("status", ("Running", "Stopped"))
+def test_start_waits_for_agent_even_when_vm_is_already_running(
+    tmp_path: Path, monkeypatch, status: str
+) -> None:
+    project = config(tmp_path)
+    runner = FakeRunner(
+        [
+            Result(json.dumps([{"name": project.instance_name, "status": status}]), "", 0),
+            *([Result("", "", 0)] if status == "Stopped" else []),
+            Result("", "Error: VM agent isn't currently running", 1),
+            Result("", "", 0),
+        ]
+    )
+    monkeypatch.setattr("sandboxsh.incus.time.sleep", lambda seconds: None)
+
+    Incus(runner).start(project)
+
+    operations = [command[4:] for command, _ in runner.commands]
+    assert operations.count(["start", project.instance_name]) == (status == "Stopped")
+    assert operations[-2:] == [["exec", project.instance_name, "--", "true"]] * 2
+
+
+def test_control_plane_queries_have_a_timeout(tmp_path: Path) -> None:
+    runner = FakeRunner([Result("[]", "", 0)])
+
+    assert Incus(runner).instance_status(config(tmp_path).instance_name) is None
+
+    assert runner.commands[0][1]["timeout"] == 30
+
+
+@pytest.mark.parametrize("wait_for", ("agent", "mount"))
+def test_guest_wait_is_bounded_even_if_a_probe_hangs(monkeypatch, wait_for: str) -> None:
+    from sandboxsh.errors import CommandTimeoutError
+
+    clock = [0.0]
+
+    class HangingRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            self.commands.append((list(command), kwargs))
+            clock[0] += kwargs["timeout"]
+            raise CommandTimeoutError(list(command), kwargs["timeout"])
+
+    runner = HangingRunner()
+    monkeypatch.setattr("sandboxsh.incus.time.monotonic", lambda: clock[0])
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr("sandboxsh.incus.time.sleep", sleep)
+    incus = Incus(runner)
+
+    with pytest.raises(SandboxshError, match="timed out waiting"):
+        if wait_for == "agent":
+            incus.wait_for_agent("ss-demo", timeout=15)
+        else:
+            incus.wait_for_mount("ss-demo", "/agent-creds", timeout=15)
+
+    assert clock[0] == 15
+    assert [kwargs["timeout"] for _, kwargs in runner.commands] == [10, 3]
+
+
+def test_agent_wait_retries_a_probe_timeout_then_recovers(monkeypatch) -> None:
+    from sandboxsh.errors import CommandTimeoutError
+
+    class RecoveringRunner(FakeRunner):
+        def run(self, command, **kwargs):
+            if not self.commands:
+                self.commands.append((list(command), kwargs))
+                raise CommandTimeoutError(list(command), kwargs["timeout"])
+            return super().run(command, **kwargs)
+
+    runner = RecoveringRunner()
+    monkeypatch.setattr("sandboxsh.incus.time.sleep", lambda seconds: None)
+
+    Incus(runner).wait_for_agent("ss-demo")
+
+    assert len(runner.commands) == 2
 
 
 def test_stop_is_idempotent_for_stopped_instance(tmp_path: Path) -> None:

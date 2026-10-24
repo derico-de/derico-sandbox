@@ -4,7 +4,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from .errors import CommandError
+from .errors import CommandError, CommandTimeoutError
 
 
 @dataclass(frozen=True)
@@ -25,16 +25,21 @@ class Runner:
         check: bool = True,
         capture: bool = True,
         env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> Result:
         args = [str(part) for part in command]
-        completed = subprocess.run(
-            args,
-            input=input_text,
-            text=True,
-            capture_output=capture,
-            check=False,
-            env=env,
-        )
+        try:
+            completed = subprocess.run(
+                args,
+                input=input_text,
+                text=True,
+                capture_output=capture,
+                check=False,
+                env=env,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CommandTimeoutError(args, exc.timeout) from exc
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         if check and completed.returncode:

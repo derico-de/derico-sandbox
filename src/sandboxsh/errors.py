@@ -6,6 +6,15 @@ class ConfigError(SandboxshError):
     """Invalid project configuration."""
 
 
+class CommandTimeoutError(SandboxshError):
+    """An external command exceeded its deadline."""
+
+    def __init__(self, command: list[str], timeout: float) -> None:
+        super().__init__(f"command timed out after {timeout:g}s: {command[0]}")
+        self.command = command
+        self.timeout = timeout
+
+
 class CommandError(SandboxshError):
     """An external command failed."""
 

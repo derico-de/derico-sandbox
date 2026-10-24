@@ -55,6 +55,39 @@ def test_non_root_provisioning_seeds_valid_pi_settings_without_breaking_shell_qu
     assert json.loads(settings) == {"npmCommand": ["pnpm"]}
 
 
+def test_uv_installer_uses_the_requested_version() -> None:
+    body = non_root_provisioning_body()
+
+    assert "https://astral.sh/uv/0.13.4/install.sh" in body
+    assert body.index("sh /tmp/uv-install.sh") < body.index("uv tool install ")
+
+
+@pytest.mark.parametrize("package", ["pip==26.2.2", "sigstore==4.5.1"])
+def test_python_tools_are_isolated_with_updated_certifi(package: str) -> None:
+    body = non_root_provisioning_body()
+
+    assert f'uv tool install "{package}" --with "certifi==2026.10.19"' in body
+    assert "--break-system-packages" not in body
+
+
+def test_pixi_uses_the_requested_version_and_the_existing_user_path() -> None:
+    body = non_root_provisioning_body()
+
+    assert "https://raw.githubusercontent.com/prefix-dev/pixi/v0.82.1/install/install.sh" in body
+    assert (
+        'PIXI_VERSION=0.82.1 PIXI_BIN_DIR="$HOME/.local/bin" PIXI_NO_PATH_UPDATE=1 \\\n'
+        "    sh /tmp/pixi-install.sh"
+    ) in body
+
+
+@pytest.mark.parametrize("command", ["uv", "pip", "pip3", "sigstore", "pixi"])
+def test_updated_tools_are_smoke_checked_as_the_developer(command: str) -> None:
+    body = non_root_provisioning_body()
+
+    assert f"\n{command} --version\n" in body
+    assert body.index(f"\n{command} --version\n") > body.index("sh /tmp/pixi-install.sh")
+
+
 def test_pi_extensions_may_run_build_scripts_before_the_first_install() -> None:
     body = non_root_provisioning_body()
 

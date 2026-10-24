@@ -16,6 +16,11 @@ def project_config(root: Path, **updates):
     return load_config(path)
 
 
+@pytest.mark.parametrize("host", ["claude.ai", "downloads.claude.ai", "pi.dev"])
+def test_agent_installers_are_builtin_endpoints(host: str) -> None:
+    assert FirewallEntry(host, (443,)) in security.DEFAULT_ENDPOINTS
+
+
 def test_firecrawl_api_is_a_builtin_endpoint() -> None:
     assert FirewallEntry("api.firecrawl.dev", (443,)) in security.DEFAULT_ENDPOINTS
 

@@ -114,6 +114,15 @@ sandboxsh recreate          # replace VM-local disk from golden image
 sandboxsh destroy           # delete VM-local disk; keep shared agent credentials
 ```
 
+After host resume, a VM can report `Running` before its Incus agent responds.
+`up`, `shell`, and `exec` wait for agent readiness (up to five minutes), showing
+an explicit waiting message if needed. Each readiness probe has a ten-second
+timeout; host access/state checks time out after thirty seconds instead of
+hanging behind an unresponsive daemon. These checks never restart the VM.
+If a host check times out, inspect `systemctl status incus` and
+`journalctl -u incus --since '15 minutes ago'` on the host, then retry once
+Incus is healthy. This does not fix failures in Incus itself during host recovery.
+
 Inside the VM:
 
 ```bash
@@ -472,7 +481,9 @@ The build installs:
 - Git, tig, curl, jq, ripgrep, fd, yazi, build-essential, PostgreSQL client,
   Vim/Neovim
 - Node.js 24 and pnpm; image-wide, project, and Pi package installs all use pnpm
-- Python 3, uv, ruff, pytest, tox/tox-uv, Invoke, and plonecli 7.0.0b14 or newer
+- Python 3, uv 0.13.4, pip 26.2.2, sigstore 4.5.1, and pixi 0.82.1;
+  pip and sigstore use isolated uv tool environments with certifi 2026.10.19
+- ruff, pytest, tox/tox-uv, Invoke, and plonecli 7.0.0b14 or newer
 - OpenLDAP and SASL development headers for building `python-ldap`
 - Cairo, Pango, and image libraries for WeasyPrint-based PDF exports
 - Claude Code, pi (plus subagents/Impeccable/sideshow/Firecrawl/codex-status), and
@@ -504,7 +515,12 @@ unreviewed build scripts, which pi's extensions have, so the extension tree at
 `pnpm-workspace.yaml`, enforced at every boot. That matches what npm would do
 and stays confined to that directory; projects keep pnpm's default policy.
 
-Rebuild the alias after changing anything under `guest/`:
+Standalone `pip` and `pip3` use the isolated pip environment; Debian's system
+Python and `python3 -m pip` remain distro-managed. Project environments should
+continue to use `uv` or their own pip.
+
+Rebuild the alias after changing anything under `guest/` (existing sandbox disks
+are unchanged until you recreate them):
 
 ```bash
 sandboxsh image build
@@ -522,7 +538,7 @@ root inside a disposable worker VM:
 | `20-docker-node` | Docker Engine and Compose, Node.js 24, pnpm |
 | `30-user` | the `dev` account matched to your uid/gid, sudoers, `/workspaces` |
 | `40-browser` | Google Chrome, Chrome DevTools MCP, Playwright with Chromium, Yazi |
-| `50-agents` | sideshow, image skills, uv, Claude Code, pi and its extensions, uv tools |
+| `50-agents` | sideshow, image skills, uv, pip, certifi, sigstore, pixi, Claude Code, pi and its extensions, uv tools |
 | `90-finalize` | git hooks, login profile, agent seed, guest helpers, cleanup, smoke checks |
 
 Every finished stage is kept as a stopped VM named `sandboxsh-cache-<key>` in
@@ -543,7 +559,7 @@ miss     40-browser       d4e5f6a7d4e5f6a7  parent changed
 publish  sandboxsh/base   build_key f6a7b8c9f6a7b8c9 (4 of 6 stages rebuilt, 7m12s)
 ```
 
-Installers that fetch "latest" (apt repositories, pnpm, Claude Code, pi, uv,
+Installers that fetch "latest" (apt repositories, pnpm, Claude Code, pi,
 Yazi, the image skills) are not part of the key, so a cache hit deliberately
 does not pick up a new upstream release. Choose when it does:
 

@@ -296,6 +296,7 @@ def shell_command(context: Context) -> None:
     context.incus.verify_host_access()
     if context.incus.instance_status(config.instance_name) != "Running":
         raise SandboxshError("VM is not running; use `sandboxsh up`")
+    context.incus.wait_for_agent(config.instance_name)
     context.runner.exec(context.incus.shell_argv(config), env=context.incus.environment)
 
 
@@ -309,6 +310,7 @@ def exec_command(context: Context, command: tuple[str, ...]) -> None:
     context.incus.verify_host_access()
     if context.incus.instance_status(config.instance_name) != "Running":
         raise SandboxshError("VM is not running; use `sandboxsh up`")
+    context.incus.wait_for_agent(config.instance_name)
     context.runner.exec(
         context.incus.exec_argv(config, command),
         env=context.incus.exec_environment(command),
